@@ -1,6 +1,6 @@
 # Publishes the game to GitHub Pages on every push to main.
-# Online play uses the game server named by the repository variable SERVER_URL
-# (e.g. wss://bekasjatek.onrender.com/ws); without it, a free public MQTT broker.
+# Online play uses the game server on Render; the repository variable SERVER_URL
+# can point it elsewhere.
 name: GitHub Pages
 
 on:
@@ -29,7 +29,7 @@ jobs:
       - run: npm ci
       - run: npm run build
         env:
-          VITE_SERVER_URL: ${{ vars.SERVER_URL }}
+          VITE_SERVER_URL: ${{ vars.SERVER_URL || 'wss://bekasjatek.onrender.com/ws' }}
           VITE_NET: mqtt
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

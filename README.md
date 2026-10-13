@@ -25,7 +25,7 @@ npm run dev          # játék a http://localhost:5173 címen
 
 ## Kitétel az internetre
 
-### A) Render.com: játékszerverrel (javasolt)
+### A) Render.com: játékszerverrel (ez fut most: https://bekasjatek.onrender.com)
 
 Itt a meccseket a szerver futtatja, így senkinek a gépe nem „házigazda”. Ha valaki kilép, a többiek tovább játszanak. Az ingyenes csomag elég.
 
@@ -35,11 +35,11 @@ Itt a meccseket a szerver futtatja, így senkinek a gépe nem „házigazda”. 
 
 Az ingyenes szerver 15 perc tétlenség után elalszik. Az első megnyitás ilyenkor fél–egy percig tart, a játék ezt ki is írja.
 
-**A GitHub Pages-es oldal is használhatja ezt a szervert:** a repó **Settings → Secrets and variables → Actions → Variables** menüjében hozz létre egy `SERVER_URL` változót, például `wss://bekasjatek.onrender.com/ws` értékkel. Utána futtasd újra az **Actions → GitHub Pages** workflow-t.
+A GitHub Pages-es oldal is ezt a szervert használja (`wss://bekasjatek.onrender.com/ws`). Ha máshol fut a szerver, a repó **Settings → Secrets and variables → Actions → Variables** menüjében egy `SERVER_URL` változóval átállítható.
 
 ### B) GitHub Pages: szerver nélkül
 
-A `main` ágra pusholt változások automatikusan kikerülnek a https://szabi0626.github.io/bekasjatek/ címre. Ha nincs megadva `SERVER_URL`, az online mód egy ingyenes, nyilvános MQTT üzenetközvetítőn megy (EMQX, HiveMQ vagy Mosquitto, amelyik elérhető). Ilyenkor a szobát létrehozó játékos böngészője számolja a meccset.
+A `main` ágra pusholt változások automatikusan kikerülnek a https://szabi0626.github.io/bekasjatek/ címre, és ott is a Render-es játékszerver fut. Ha a build `VITE_SERVER_URL` nélkül, `VITE_NET=mqtt` beállítással készül, az online mód egy ingyenes, nyilvános MQTT üzenetközvetítőn megy (EMQX, HiveMQ vagy Mosquitto, amelyik elérhető). Ilyenkor a szobát létrehozó játékos böngészője számolja a meccset.
 
 ### C) claude.ai
 
