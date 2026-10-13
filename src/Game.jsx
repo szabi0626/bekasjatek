@@ -12,6 +12,16 @@ export default function Game({ config, net, onExit }) {
   const engine = useRef(null);
   const [hud, setHud] = useState(null);
   const [help, setHelp] = useState(true);
+  const [showDiag, setShowDiag] = useState(false);
+
+  // D toggles the connection/performance readout.
+  useEffect(() => {
+    const onKey = e => {
+      if (e.key.toLowerCase() === "d" && !e.repeat && !e.ctrlKey && !e.metaKey) setShowDiag(x => !x);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const [notice, setNotice] = useState(null);
   // On the game server the room's owner (whoever created it, or the next player
   // after they leave) may start a new round.
@@ -136,6 +146,8 @@ export default function Game({ config, net, onExit }) {
           <div className="ff-countdown" aria-live="assertive">{hud.countdown}</div>
         )}
 
+        {showDiag && hud?.diagnostics && <Diagnostics d={hud.diagnostics}/>}
+
         <div className="ff-bottom">
           <div className="ff-status" role="status">{hud?.message ?? ""}</div>
           <div className="ff-power">
@@ -194,9 +206,40 @@ export default function Game({ config, net, onExit }) {
 
       <footer className="ff-footer">
         <span><strong>{solo ? `${total} béka. 4 levél.` : config.realtime ? `${players.length} játékos · ${config.duration ?? 60} mp, korlátlan béka` : `${players.length} játékos · ${total} béka fejenként`}</strong> Pattogás · súrlódás · forgás</span>
-        <span>{canReset && !serverGame ? "R: új kör · " : ""}Esc: töltés megszakítása</span>
+        <span>{canReset && !serverGame ? "R: új kör · " : ""}Esc: töltés megszakítása · D: diagnosztika</span>
       </footer>
     </>
+  );
+}
+
+function Diagnostics({ d }) {
+  const sv = d.server;
+  const rows = [
+    ["Képkocka/mp", d.fps],
+    ["Mód", d.mode === "client" ? "online (szerver számol)" : d.mode === "host" ? "online (te számolsz)" : "helyi"],
+    ["Békák a pályán", d.frogs],
+  ];
+  if (d.mode === "client") {
+    rows.push(
+      ["Frissítés/mp", d.snapshotsPerSecond ?? "–"],
+      ["Leghosszabb szünet", d.worstGapMs != null ? `${d.worstGapMs} ms` : "–"],
+      ["Tartalék (késleltetés)", `${d.delayMs} ms`],
+      ["Kifogyott képkockák", d.underruns],
+    );
+    if (sv) {
+      rows.push(
+        ["Szerver: munka/ütem", `${sv[0]} ms`],
+        ["Szerver: leghosszabb ütemszünet", `${sv[1]} ms`],
+        ["Szerver: lemaradás", `${sv[2]} ms`],
+        ["Szerver: szobák", sv[3]],
+      );
+    }
+  }
+  return (
+    <div className="ff-diag" role="status" aria-label="Diagnosztika">
+      <b>DIAGNOSZTIKA</b> <small>(D: elrejtés)</small>
+      {rows.map(([k, val]) => <div key={k}><span>{k}</span><span>{val}</span></div>)}
+    </div>
   );
 }
 

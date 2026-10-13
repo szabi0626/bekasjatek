@@ -72,6 +72,13 @@ html,body{margin:0;background:#f8f7f0}
 @keyframes ff-pulse{50%{transform:scale(1.05)}}
 @media(prefers-reduced-motion:reduce){.ff-timer.is-low{animation:none}}
 
+/* Diagnostics readout (D) */
+.ff-diag{position:absolute;left:24px;bottom:96px;z-index:5;min-width:260px;background:#1f2b22e6;color:#e9f2dc;border-radius:12px;padding:10px 12px;font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;pointer-events:none}
+.ff-diag b{font-size:10px;letter-spacing:1.2px}
+.ff-diag small{color:#a8b89a}
+.ff-diag div{display:flex;justify-content:space-between;gap:16px}
+.ff-diag div span:last-child{font-variant-numeric:tabular-nums;color:#fff}
+
 /* Menu / lobby */
 .ff-menu-bg{display:grid;place-items:center;overflow:auto;background:radial-gradient(circle at 50% 120%,#c9dca8 0,#e9efdf 55%)}
 .ff-panel{width:min(440px,calc(100% - 32px));margin:24px auto;background:#fafbefee;border:1px solid #fff;border-radius:24px;padding:28px;box-shadow:0 24px 70px #26352120;display:flex;flex-direction:column;gap:12px}

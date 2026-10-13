@@ -56,6 +56,9 @@ https://claude.ai/artifact/QSRF8aic3kmvhtquU7L1d4 – itt a claude.ai saját val
 - A fizika és a szabályok (`src/game/sim.js`) böngésző nélkül is futnak. Online a szerver számol, helyi játéknál a böngésző.
 - A böngészők a célzást és a lövést küldik. A szerver ellenőrzi, hogy az adott játékos lőhet-e: valós idejű módban lejárt-e a saját újratöltése, felváltva módban ő következik-e.
 - A szerver másodpercenként 20-szor elküldi az állást, a böngészők ezek között simán mozgatják a békákat.
+- A fa forgását a böngésző maga számolja, mert az kiszámítható, így akkor sem akad, ha a frissítések egyenetlenül jönnek. A böngésző méri a frissítések egyenetlenségét, és ehhez igazítja a tartalékot (80–350 ms).
+- A fán nyugvó békák „elalszanak”: a fával együtt forognak, de nem számol rajtuk a fizika, amíg egy gyorsan érkező béka fel nem ébreszti őket.
+- Diagnosztika: játék közben a **D** billentyű megjeleníti a képkocka/mp értéket, a frissítések ütemét és szüneteit, valamint a szerver terhelését. A szerver állapota a `/stats` oldalon is látszik (pl. https://bekasjatek.onrender.com/stats).
 - Ha valaki kilép, a meccs megy tovább. A szoba gombjait (indítás, új kör) a következő játékos örökli.
 - Szerver nélküli módokban (MQTT, claude.ai) ugyanez a szimuláció a szobát létrehozó játékos böngészőjében fut.
 

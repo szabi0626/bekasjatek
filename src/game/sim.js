@@ -13,6 +13,8 @@ const RT_COUNTDOWN = 3;
 const MAX_BODIES = 48;
 // Seconds a frog stays visible after touching the ground.
 const GROUND_LINGER = 0.4;
+// Speed (relative to the turning tree) at which an arriving frog wakes a sleeping one.
+const WAKE_SPEED = 0.8;
 
 export const SOLO_MESSAGE = "Célozz, tölts, és figyeld a forgó leveleket!";
 
@@ -202,6 +204,8 @@ export function createSim(options) {
   const tangent = new THREE.Vector3();
   const impulseVector = new THREE.Vector3();
   const stack = new Int32Array(64);
+  const rideQ = new THREE.Quaternion();
+  const offset = new THREE.Vector3();
 
   function surfaceVelocity(c, point) {
     if (!c.moving) return new THREE.Vector3();
@@ -221,6 +225,7 @@ export function createSim(options) {
     };
   }
   function applyImpulse(b, impulse, r, sign) {
+    if (b.sleeping) return;
     b.v.addScaledVector(impulse, b.invMass * sign);
     temp.crossVectors(r, impulse);
     b.w.addScaledVector(temp, b.invInertia * sign);
@@ -228,7 +233,7 @@ export function createSim(options) {
   function effectiveMass(c, direction) {
     temp.crossVectors(c.ra, direction);
     let inverse = c.a.invMass + temp.lengthSq() * c.a.invInertia;
-    if (c.b) {
+    if (c.b && !c.b.sleeping) {
       temp.crossVectors(c.rb, direction);
       inverse += c.b.invMass + temp.lengthSq() * c.b.invInertia;
     }
@@ -275,7 +280,19 @@ export function createSim(options) {
       c.object.getWorldQuaternion(c.rotation);
       c.worldBound.copy(c.bound).applyMatrix4(c.object.matrixWorld);
     }
+    // Frogs asleep on the tree ride along with it, costing no collision work.
+    rideQ.setFromAxisAngle(UP, treeOmega.y * dt);
     for (const b of g.bodies) {
+      if (!b.sleeping) continue;
+      offset.copy(b.obj.position).sub(treeCentre).applyAxisAngle(UP, treeOmega.y * dt);
+      b.obj.position.copy(treeCentre).add(offset);
+      b.obj.quaternion.premultiply(rideQ).normalize();
+      b.v.crossVectors(treeOmega, offset);
+      b.w.copy(treeOmega);
+      b.lastLeaf = g.time;
+    }
+    for (const b of g.bodies) {
+      if (b.sleeping) continue;
       b.v.y -= GRAVITY * dt;
       b.v.multiplyScalar(Math.exp(-0.035 * dt));
       b.w.multiplyScalar(Math.exp(-0.24 * dt));
@@ -289,6 +306,7 @@ export function createSim(options) {
     }
     const contacts = [];
     for (const b of g.bodies) {
+      if (b.sleeping) continue;
       for (const h of hull) {
         centre.copy(h.p).applyQuaternion(b.obj.quaternion).add(b.obj.position);
         // The raised round stage around the tree: a flat disc at y = 0.
@@ -362,11 +380,24 @@ export function createSim(options) {
       const a = g.bodies[i];
       for (let j = i + 1; j < g.bodies.length; j++) {
         const b = g.bodies[j];
+        if (a.sleeping && b.sleeping) continue;
         if (a.obj.position.distanceToSquared(b.obj.position) > 1.1) continue;
+        // A frog arriving fast wakes a sleeping one, so it can be knocked off; one
+        // just sitting next to it meets it as a fixed obstacle.
+        if (a.sleeping || b.sleeping) {
+          const mover = a.sleeping ? b : a;
+          offset.copy(mover.obj.position).sub(treeCentre);
+          if (temp.crossVectors(treeOmega, offset).sub(mover.v).lengthSq() > WAKE_SPEED * WAKE_SPEED) {
+            a.sleeping = b.sleeping = false;
+            a.still = b.still = 0;
+          }
+        }
+        // The solver moves the first body of a contact: keep a sleeping frog second.
+        const [first, second] = a.sleeping ? [b, a] : [a, b];
         for (const ha of hull) {
-          const pa = ha.p.clone().applyQuaternion(a.obj.quaternion).add(a.obj.position);
+          const pa = ha.p.clone().applyQuaternion(first.obj.quaternion).add(first.obj.position);
           for (const hb of hull) {
-            const pb = hb.p.clone().applyQuaternion(b.obj.quaternion).add(b.obj.position);
+            const pb = hb.p.clone().applyQuaternion(second.obj.quaternion).add(second.obj.position);
             const n = pa.clone().sub(pb);
             const distance = n.length();
             const radius = ha.r + hb.r;
@@ -374,7 +405,7 @@ export function createSim(options) {
             if (distance < 0.000001) n.set(0, 1, 0);
             else n.multiplyScalar(1 / distance);
             const point = pa.clone().addScaledVector(n, -ha.r + (radius - distance) * 0.5);
-            contacts.push(makeContact(a, b, point, n, radius - distance, new THREE.Vector3(), 0.65, 0.14));
+            contacts.push(makeContact(first, second, point, n, radius - distance, new THREE.Vector3(), 0.65, 0.14));
           }
         }
       }
@@ -389,10 +420,10 @@ export function createSim(options) {
     for (const c of contacts) {
       const depth = Math.max(0, c.depth - 0.002);
       if (depth > 0) {
-        const totalInverseMass = c.a.invMass + (c.b ? c.b.invMass : 0);
+        const totalInverseMass = c.a.invMass + (c.b && !c.b.sleeping ? c.b.invMass : 0);
         const amount = Math.min(depth * 0.55, 0.035);
         for (const [b, sign] of [[c.a, 1], [c.b, -1]]) {
-          if (!b) continue;
+          if (!b || b.sleeping) continue;
           let correction = corrections.get(b);
           if (!correction) {
             correction = { delta: new THREE.Vector3(), count: 0 };
@@ -416,6 +447,14 @@ export function createSim(options) {
     }
 
     for (const b of g.bodies) {
+      // A frog holding still on the tree (relative to the turning tree) falls asleep.
+      if (b.scored && !b.sleeping) {
+        offset.copy(b.obj.position).sub(treeCentre);
+        temp.crossVectors(treeOmega, offset);
+        const calm = temp.sub(b.v).lengthSq() < 0.0144 && temp2.copy(b.w).sub(treeOmega).lengthSq() < 0.09;
+        b.still = calm ? (b.still || 0) + dt : 0;
+        if (b.still > 0.6) b.sleeping = true;
+      }
       const supported = g.time - b.lastLeaf < 0.08;
       b.support = supported ? b.support + dt : Math.max(0, b.support - dt * 4);
       const before = b.scored;
@@ -523,5 +562,5 @@ export function createSim(options) {
     };
   }
 
-  return { players, realtime, treeScale, input, reset, setPresent, advance, state, indexOf: id => players.findIndex(p => p.id === id) };
+  return { players, realtime, treeScale, debugBodies: () => g.bodies, input, reset, setPresent, advance, state, indexOf: id => players.findIndex(p => p.id === id) };
 }

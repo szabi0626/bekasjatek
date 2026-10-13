@@ -2,15 +2,17 @@
 // physics live in sim.js, which runs here for local play and on the game
 // server (or the host's browser) for online play.
 import * as THREE from "three";
-import { buildWorld, layout, FROG_COLORS, TREE_CENTRE } from "./world.js";
+import { buildWorld, layout, FROG_COLORS, TREE_CENTRE, TREE_OMEGA } from "./world.js";
 import { createSim, launchFrame, frameToWorld, launchOrigin, launchVelocity, GRAVITY, SOLO_MESSAGE, round } from "./sim.js";
 
 export { FROG_COLORS, SOLO_MESSAGE };
 
 const SNAPSHOT_MS = 50;
 const AIM_MS = 66;
-// Snapshots are shown this far (s) behind the newest, so there is always one to blend towards.
-const INTERP_DELAY = 0.12;
+// Snapshots are shown this far (s) behind the newest, so there is always one to
+// blend towards; it adapts to how unevenly they arrive, within these bounds.
+const MIN_DELAY = 0.08;
+const MAX_DELAY = 0.35;
 const FADE_TIME = 0.3;
 
 const clamp = THREE.MathUtils.clamp;
@@ -157,6 +159,7 @@ export function createEngine(host, opts) {
       message: v.msg, charging, power,
       timeLeft: realtime ? v.tl : null, countdown: realtime ? v.cd : 0,
       waiting: own.waitingShot,
+      diagnostics: diagnostics(),
     });
   }
 
@@ -243,12 +246,15 @@ export function createEngine(host, opts) {
   // (s.t), so uneven arrival from a busy server or network does not make frogs jitter.
   const buffer = [];
   let clockOffset = null; // local seconds minus simulation seconds, for the least delayed snapshot
+  let delay = 0.12;
+  // Diagnostics (D key): arrival gaps, lateness, and how often the buffer ran dry.
+  const diag = { gaps: [], late: [], underruns: 0, lastArrival: 0, frames: [], server: null };
   function applySnapshot(s) {
     if (mode !== "client" || !s || !Array.isArray(s.b) || !Array.isArray(s.l)) return;
     const local = performance.now() / 1000;
     const t = Number(s.t) || 0;
     const last = buffer[buffer.length - 1];
-    // A new round or a restarted clock: start over.
+    // A restarted clock: start over.
     if (last && t < last.t) {
       buffer.length = 0;
       clockOffset = null;
@@ -256,6 +262,20 @@ export function createEngine(host, opts) {
     const offset = local - t;
     // Track the fastest delivery, drifting slowly so a lasting slowdown is followed.
     clockOffset = clockOffset === null ? offset : Math.min(offset, clockOffset + 0.002);
+    // How late this one is compared with the fastest: the delay must cover that.
+    const lateness = offset - clockOffset;
+    diag.late.push(lateness);
+    if (diag.late.length > 60) diag.late.shift();
+    const worst = Math.max(...diag.late);
+    const wanted = clamp(worst + 0.04, MIN_DELAY, MAX_DELAY);
+    // Grow at once, shrink slowly.
+    delay = wanted > delay ? wanted : delay + (wanted - delay) * 0.02;
+    if (diag.lastArrival) {
+      diag.gaps.push(local - diag.lastArrival);
+      if (diag.gaps.length > 60) diag.gaps.shift();
+    }
+    diag.lastArrival = local;
+    if (s.sv) diag.server = s.sv;
     buffer.push({ t, s, bodies: new Map(s.b.map(a => [a[0], a])) });
     if (buffer.length > 60) buffer.shift();
     v = s;
@@ -266,15 +286,53 @@ export function createEngine(host, opts) {
     }
     if (!myTurn()) own.charging = false;
   }
+  const rideQ = new THREE.Quaternion();
+  const UP = new THREE.Vector3(0, 1, 0);
   function interpolate(now) {
     if (!buffer.length) return;
-    const rt = now / 1000 - clockOffset - INTERP_DELAY;
+    const rt = now / 1000 - clockOffset - delay;
     while (buffer.length > 2 && buffer[1].t <= rt) buffer.shift();
+    const newest = buffer[buffer.length - 1];
+    if (rt > newest.t) {
+      // Ran out of snapshots: keep the tree turning (its motion is known) and the
+      // frogs sitting on it turning with it, instead of freezing.
+      if (!newest.s.finished) diag.underruns++;
+      const ahead = newest.s.finished ? 0 : Math.min(rt - newest.t, 0.5);
+      const turn = TREE_OMEGA.y * ahead;
+      tree.rotation.y = newest.s.tree + turn;
+      drawBodies(newest.s.b, null, 1);
+      if (turn) {
+        rideQ.setFromAxisAngle(UP, turn);
+        for (const b of newest.s.b) {
+          if (!b[9]) continue;
+          const view = views.get(b[0]);
+          if (!view) continue;
+          view.position.sub(TREE_CENTRE).applyAxisAngle(UP, turn).add(TREE_CENTRE);
+          view.quaternion.premultiply(rideQ);
+        }
+      }
+      return;
+    }
     const a = buffer[0];
     const b = buffer[1] || a;
     const k = b.t > a.t ? clamp((rt - a.t) / (b.t - a.t), 0, 1) : 1;
-    tree.rotation.y = a.s.tree + (b.s.tree - a.s.tree) * k;
+    // The tree turns at a constant rate: place it by time, not by blending angles.
+    tree.rotation.y = a.s.finished ? b.s.tree : a.s.tree + (b.s.tree - a.s.tree) * k;
     drawBodies(b.s.b, a.bodies, k);
+  }
+  function diagnostics() {
+    const avg = list => (list.length ? list.reduce((x, y) => x + y, 0) / list.length : 0);
+    const fps = diag.frames.length > 1 ? (diag.frames.length - 1) / ((diag.frames[diag.frames.length - 1] - diag.frames[0]) / 1000) : 0;
+    return {
+      fps: Math.round(fps),
+      mode,
+      snapshotsPerSecond: diag.gaps.length ? Math.round(1 / avg(diag.gaps)) : null,
+      worstGapMs: diag.gaps.length ? Math.round(Math.max(...diag.gaps) * 1000) : null,
+      delayMs: Math.round(delay * 1000),
+      underruns: diag.underruns,
+      frogs: v.b.length,
+      server: diag.server,
+    };
   }
 
   // --- Online roles -----------------------------------------------------------
@@ -374,6 +432,8 @@ export function createEngine(host, opts) {
   let frame;
   function animate(now) {
     frame = requestAnimationFrame(animate);
+    diag.frames.push(now);
+    if (diag.frames.length > 60) diag.frames.shift();
     const dt = Math.min((now - previous) / 1000, 0.065);
     previous = now;
     if (sim) {

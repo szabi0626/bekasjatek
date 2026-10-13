@@ -14,8 +14,10 @@ const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist
 const MAX_PLAYERS = 8;
 // Frogs in play at once in real-time rounds; kept low for the free plan's 0.1 CPU.
 const MAX_BODIES = Number(process.env.MAX_BODIES) || 40;
-const TICK_MS = 1000 / 60;
-const SNAPSHOT_MS = 50;
+// 40 ticks a second, a snapshot every second tick (20 a second). Few wake-ups
+// matter on a CPU-limited host, which pauses the process when it uses its share.
+const TICK_MS = 25;
+const SNAPSHOT_EVERY = 2;
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 
 const MIME = {
@@ -31,6 +33,17 @@ const MIME = {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://localhost");
+  if (url.pathname === "/stats") {
+    const usage = process.cpuUsage();
+    res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*", "cache-control": "no-store" });
+    res.end(JSON.stringify({
+      rooms: rooms.size, uptimeS: Math.round(process.uptime()),
+      cpuSecondsUsed: +((usage.user + usage.system) / 1e6).toFixed(1),
+      memoryMb: Math.round(process.memoryUsage().rss / 1e6),
+      games: stats.detail,
+    }, null, 2));
+    return;
+  }
   if (url.pathname === "/healthz") {
     // Also lets a page on another host (GitHub Pages) wake a sleeping free-tier server.
     res.writeHead(200, { "content-type": "text/plain", "access-control-allow-origin": "*" });
@@ -61,8 +74,41 @@ const server = http.createServer((req, res) => {
   });
 });
 
-/** code -> { code, ownerId, players: Map<id, { id, name, ws }>, sim, timer } */
+/** code -> { code, ownerId, players: Map<id, { id, name, ws }>, sim, timer, perf } */
 const rooms = new Map();
+
+// Server health, refreshed every second: [avg work per tick ms, worst tick gap ms,
+// lag of the slowest room's clock behind real time ms, rooms]. Sent in snapshots
+// (as "sv") for the in-game readout, and served at /stats.
+const stats = { summary: [0, 0, 0, 0], detail: [] };
+setInterval(() => {
+  const detail = [];
+  for (const room of rooms.values()) {
+    if (!room.perf) continue;
+    const p = room.perf;
+    const avg = p.work.length ? p.work.reduce((a, b) => a + b, 0) / p.work.length : 0;
+    const state = room.sim.state(true);
+    // A finished round stops the simulation clock on purpose: measure from the next one.
+    if (state.finished) {
+      p.started = performance.now();
+      p.simStart = state.t;
+    }
+    const realElapsed = (performance.now() - p.started) / 1000;
+    const simElapsed = state.t - p.simStart;
+    detail.push({
+      code: room.code, players: room.players.size, frogs: state.b.length,
+      workMs: +avg.toFixed(2), worstGapMs: Math.round(Math.max(0, ...p.gaps)),
+      lagMs: Math.round(Math.max(0, realElapsed - simElapsed) * 1000),
+    });
+  }
+  stats.detail = detail;
+  stats.summary = [
+    +Math.max(0, ...detail.map(d => d.workMs)).toFixed(1),
+    Math.max(0, ...detail.map(d => d.worstGapMs)),
+    Math.max(0, ...detail.map(d => d.lagMs)),
+    rooms.size,
+  ];
+}, 1000).unref();
 
 function newCode() {
   for (;;) {
@@ -123,15 +169,21 @@ function start(room, settings) {
   room.sim = createSim({ players, frogsPerPlayer, realtime, duration, treeScale, maxBodies: MAX_BODIES });
   toAll(room, { t: "fromHost", data: { kind: "start", players, frogsPerPlayer, realtime, duration, treeScale } });
   let last = performance.now();
-  let nextSnapshot = 0;
+  let ticks = 0;
+  room.perf = { work: [], gaps: [], lag: 0, started: last, simStart: room.sim.state().t };
   room.timer = setInterval(() => {
     const now = performance.now();
+    room.perf.gaps.push(now - last);
     room.sim.advance((now - last) / 1000);
     last = now;
-    if (now >= nextSnapshot) {
-      nextSnapshot = now + SNAPSHOT_MS;
-      toAll(room, { t: "fromHost", data: { kind: "state", s: room.sim.state() } });
+    if (++ticks % SNAPSHOT_EVERY === 0) {
+      const s = room.sim.state();
+      s.sv = stats.summary;
+      toAll(room, { t: "fromHost", data: { kind: "state", s } });
     }
+    room.perf.work.push(performance.now() - now);
+    if (room.perf.work.length > 80) room.perf.work.shift();
+    if (room.perf.gaps.length > 80) room.perf.gaps.shift();
   }, TICK_MS);
 }
 
