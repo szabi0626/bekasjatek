@@ -93,6 +93,8 @@ html,body{margin:0;background:#f8f7f0}
 .ff-join{display:flex;gap:8px;align-items:stretch}
 .ff-join input{width:110px;flex:none;text-align:center;font-size:20px;font-weight:700;letter-spacing:4px;text-transform:uppercase}
 .ff-join .ff-replay{margin-top:0}
+.ff-notice{color:#55704b;background:#eef3e1;border:1px solid #dce5c9;border-radius:12px;padding:10px 12px;font-size:12px;line-height:1.5;margin:0}
+.ff-share{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
 .ff-error{color:#b3412c;background:#fdeee8;border:1px solid #f5cfc3;border-radius:12px;padding:10px 12px;font-size:12px;margin:0}
 .ff-code{font-size:56px;font-weight:800;letter-spacing:10px;color:#355d3d;text-align:center;line-height:1}
 .ff-lobby{list-style:none;padding:0;margin:4px 0;display:flex;flex-direction:column;gap:6px}

@@ -8,6 +8,9 @@ import { Peer } from "peerjs";
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 const MAX_PLAYERS = 4;
 const PREFIX = "bekasjatek-ff-";
+const JOIN_PATIENCE_MS = 60000;
+const RETRY_MS = 2500;
+const OPEN_TIMEOUT_MS = 12000;
 
 function newCode() {
   let code = "";
@@ -105,10 +108,16 @@ export class PeerNet {
         this.emit("error", { message: "Nem sikerült elérni a kapcsolódási szervert. Próbáld újra pár másodperc múlva." });
       }
     });
-    peer.on("disconnected", () => {
-      // Lost the broker only: existing games keep running; reconnect so new players can join.
-      if (!this.closed && !peer.destroyed) peer.reconnect();
-    });
+    // Losing the broker (a phone switching apps, a network blip) leaves running games
+    // alone but stops new players from finding the room, so reconnect as soon as possible.
+    const reconnect = () => {
+      if (!this.closed && !peer.destroyed && peer.disconnected) peer.reconnect();
+    };
+    peer.on("disconnected", reconnect);
+    clearInterval(this.keepAlive);
+    this.keepAlive = setInterval(reconnect, 4000);
+    this.onVisible = () => { if (document.visibilityState === "visible") reconnect(); };
+    document.addEventListener("visibilitychange", this.onVisible);
   }
 
   accept(conn) {
@@ -153,43 +162,80 @@ export class PeerNet {
     const peer = new Peer(peerOptions());
     this.peer = peer;
     let joined = false;
+    let retryTimer = null;
+    let openTimer = null;
+    const deadline = Date.now() + JOIN_PATIENCE_MS;
     const fail = message => {
       if (joined || this.closed) return;
+      clearTimeout(retryTimer);
+      clearTimeout(openTimer);
       this.emit("error", { message });
       this.close(true);
     };
-    const timer = setTimeout(() => fail("Nem sikerült csatlakozni. Ellenőrizd a kódot, vagy próbáld újra."), 15000);
-    peer.on("open", () => {
+    // The host may be briefly unreachable (e.g. a phone that switched apps to share
+    // the code drops its broker connection), so keep trying for a while.
+    const retry = (why, message) => {
+      clearTimeout(openTimer);
+      this.conn?.close();
+      if (joined || this.closed) return;
+      if (Date.now() > deadline) return fail(message);
+      this.emit("notice", { message: why });
+      retryTimer = setTimeout(attempt, RETRY_MS);
+    };
+    const attempt = () => {
+      if (joined || this.closed || peer.destroyed) return;
+      if (peer.disconnected) peer.reconnect();
       const conn = peer.connect(PREFIX + code, { reliable: true, serialization: "json" });
       this.conn = conn;
-      conn.on("open", () => conn.send({ t: "join", name }));
+      openTimer = setTimeout(() => retry(
+        "A kapcsolat lassan épül fel, újrapróbálom…",
+        "Nem sikerült közvetlen kapcsolatot létrehozni a házigazdával. Lehet, hogy valamelyikőtök hálózata tiltja.",
+      ), OPEN_TIMEOUT_MS);
+      conn.on("open", () => {
+        clearTimeout(openTimer);
+        conn.send({ t: "join", name });
+      });
       conn.on("data", msg => {
-        if (!msg || typeof msg.t !== "string") return;
+        if (!msg || typeof msg.t !== "string" || conn !== this.conn) return;
         if (msg.t === "joined") {
           joined = true;
-          clearTimeout(timer);
+          clearTimeout(retryTimer);
           this.you = msg.you;
+          this.emit("notice", { message: "" });
         }
-        if (msg.t === "error") {
-          clearTimeout(timer);
-          return fail(msg.message);
-        }
+        if (msg.t === "error") return fail(msg.message);
         this.emit(msg.t, msg);
       });
       conn.on("close", () => {
-        clearTimeout(timer);
+        if (conn !== this.conn) return;
         if (joined) this.emit("hostLeft", {});
-        else fail("A kapcsolat megszakadt csatlakozás közben.");
       });
-    });
+    };
+    this.emit("notice", { message: `Csatlakozás a(z) ${code} szobához…` });
+    peer.on("open", attempt);
     peer.on("error", err => {
-      clearTimeout(timer);
-      if (err.type === "peer-unavailable") fail("Nincs ilyen szoba, vagy a házigazda már kilépett.");
-      else if (!joined) fail("Nem sikerült kapcsolódni. Lehet, hogy a hálózatod tiltja a közvetlen kapcsolatot.");
+      if (joined) return;
+      if (err.type === "peer-unavailable") {
+        retry(
+          `Várakozás a házigazdára (${code})… Ha átváltott egy másik alkalmazásra, amint visszajön az oldalra, csatlakozol.`,
+          "Nincs ilyen szoba, vagy a házigazda bezárta az oldalt. Ellenőrizd a kódot.",
+        );
+      } else if (["network", "server-error", "socket-error", "socket-closed", "disconnected"].includes(err.type)) {
+        retry("Kapcsolódás a szerverhez…", "Nem sikerült elérni a kapcsolódási szervert. Ellenőrizd az internetkapcsolatot.");
+      } else {
+        fail("Nem sikerült kapcsolódni. Lehet, hogy a hálózatod tiltja a közvetlen kapcsolatot.");
+      }
     });
+    this.stopJoin = () => {
+      clearTimeout(retryTimer);
+      clearTimeout(openTimer);
+    };
   }
 
   close(keepHandlers = false) {
+    this.stopJoin?.();
+    clearInterval(this.keepAlive);
+    document.removeEventListener("visibilitychange", this.onVisible);
     this.conn?.close();
     this.peer?.destroy();
     this.peer = null;

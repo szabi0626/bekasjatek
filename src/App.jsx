@@ -21,6 +21,7 @@ export default function App() {
   const [net, setNet] = useState(null);
   const [room, setRoom] = useState(null);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const live = useRef({});
   live.current = { screen, room };
 
@@ -34,7 +35,8 @@ export default function App() {
         history.replaceState(null, "", `?room=${m.code}`);
       }),
       net.on("players", m => setRoom(r => r && { ...r, players: m.players, hostId: m.hostId })),
-      net.on("error", m => setError(m.message)),
+      net.on("error", m => { setNotice(""); setError(m.message); }),
+      net.on("notice", m => setNotice(m.message)),
       net.on("fromHost", m => {
         if (m.data?.kind !== "start" || !live.current.room) return;
         setGame({ mode: "client", players: m.data.players, frogsPerPlayer: m.data.frogsPerPlayer, realtime: !!m.data.realtime, duration: m.data.duration, localPlayerId: live.current.room.you });
@@ -69,6 +71,7 @@ export default function App() {
 
   async function connect(action, name, code) {
     setError("");
+    setNotice("");
     storeName(name);
     disconnect();
     let n;
@@ -110,7 +113,7 @@ export default function App() {
                 setScreen("game");
               }} onLocal={() => setScreen("local")} onOnline={() => setScreen("online")}/>}
               {screen === "local" && <LocalSetup onStart={cfg => { setGame(cfg); setScreen("game"); }}/>}
-              {screen === "online" && <OnlineSetup error={error} onConnect={connect}/>}
+              {screen === "online" && <OnlineSetup error={error} notice={notice} onConnect={connect}/>}
               {screen === "lobby" && room && <Lobby room={room} error={error} onStart={startOnline} onLeave={toMenu}/>}
             </div>
           </main>
@@ -183,7 +186,7 @@ function LocalSetup({ onStart }) {
   );
 }
 
-function OnlineSetup({ error, onConnect }) {
+function OnlineSetup({ error, notice, onConnect }) {
   const [name, setName] = useState(storedName());
   const [code, setCode] = useState(roomFromUrl());
   const [busy, setBusy] = useState(false);
@@ -210,6 +213,7 @@ function OnlineSetup({ error, onConnect }) {
         />
         <button className="ff-replay" disabled={!cleanName || code.length !== 4 || busy} onClick={() => go("join")}>Csatlakozás</button>
       </div>
+      {notice && !error && <p className="ff-notice" role="status">{notice}</p>}
       {error && <p className="ff-error">{error}</p>}
     </>
   );
@@ -224,6 +228,12 @@ function Lobby({ room, error, onStart, onLeave }) {
   // Inside claude.ai the query string does not reach the page, so share the code instead.
   const inArtifact = !!window.claude;
   const link = inArtifact ? room.code : `${location.origin}${location.pathname}?room=${room.code}`;
+  const canShare = !inArtifact && typeof navigator.share === "function";
+  async function share() {
+    try {
+      await navigator.share({ title: "Flippin' frogs", text: `Gyere békázni! Szobakód: ${room.code}`, url: link });
+    } catch { /* dismissed */ }
+  }
   async function copy() {
     try {
       await navigator.clipboard.writeText(link);
@@ -235,7 +245,16 @@ function Lobby({ room, error, onStart, onLeave }) {
     <>
       <div className="ff-eyebrow">● SZOBA</div>
       <div className="ff-code">{room.code}</div>
-      <button className="ff-btn" onClick={copy}>{copied ? "Kimásolva ✓" : inArtifact ? "Kód másolása" : "Meghívó link másolása"}</button>
+      <div className="ff-share">
+        <button className="ff-btn" onClick={copy}>{copied ? "Kimásolva ✓" : inArtifact ? "Kód másolása" : "Meghívó link másolása"}</button>
+        {canShare && <button className="ff-btn" onClick={share}>Meghívó küldése…</button>}
+      </div>
+      {isHost && !inArtifact && (
+        <p className="ff-notice">
+          Tartsd nyitva ezt az oldalt, amíg mindenki be nem lép. Ha telefonon átváltasz egy másik
+          alkalmazásra, addig senki nem tud csatlakozni. Visszatérés után a többiek automatikusan bejutnak.
+        </p>
+      )}
       <ul className="ff-lobby">
         {room.players.map((p, i) => (
           <li key={p.id} style={{ "--pc": FROG_COLORS[i].main }}>
