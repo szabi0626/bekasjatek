@@ -1,0 +1,12 @@
+# Render.com Blueprint: one free web service that serves the game and the multiplayer server.
+services:
+  - type: web
+    name: bekasjatek
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"

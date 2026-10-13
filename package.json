@@ -1,0 +1,27 @@
+{
+  "name": "bekasjatek",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Flippin' frogs – 3D békakilövő játék online többjátékos móddal",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "vite",
+    "dev:server": "node --watch server/index.js",
+    "build": "vite build",
+    "start": "node server/index.js",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "three": "^0.180.0",
+    "vite": "^7.0.0"
+  }
+}
