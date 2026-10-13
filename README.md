@@ -29,7 +29,7 @@ npm run dev          # játék a http://localhost:5173 címen
 
 ### A) Render.com: játékszerverrel (ez fut most: https://bekasjatek.onrender.com)
 
-Itt a meccseket a szerver futtatja, így senkinek a gépe nem „házigazda”. Ha valaki kilép, a többiek tovább játszanak. A `render.yaml` a **Starter** csomagot kéri (kb. 7 dollár/hó, 0,5 processzormag, nem alszik el). Az ingyenes csomag 0,1 magja kevés, azzal szaggat a játék. Egy teljes, 8 fős, óriás fás meccs a legrosszabb esetben is csak kb. 0,3 magot használ, így több egyidejű szobához a Standard csomag (1 mag) ajánlott.
+Itt a meccseket a szerver futtatja, így senkinek a gépe nem „házigazda”. Ha valaki kilép, a többiek tovább játszanak. Az ingyenes csomag fut: 0,1 processzormag, és 15 perc tétlenség után elalszik. Az első megnyitás ilyenkor fél–egy percig tart, a játék ezt ki is írja. Hogy a kevés processzor elég legyen, egyszerre legfeljebb 40 béka lehet a pályán. Ha később több kell: Render **Starter** csomag (0,5 mag, kb. 7 dollár/hó), és a `MAX_BODIES` környezeti változó feljebb állítható.
 
 1. Regisztrálj a [render.com](https://render.com) oldalon a GitHub-fiókoddal.
 2. **New → Blueprint**, majd válaszd ki a `bekasjatek` repót. A `render.yaml` minden beállítást tartalmaz, csak jóvá kell hagyni.

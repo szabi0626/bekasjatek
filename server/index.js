@@ -12,8 +12,8 @@ import { createSim } from "../src/game/sim.js";
 const PORT = Number(process.env.PORT) || 8080;
 const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist");
 const MAX_PLAYERS = 8;
-// The server has the CPU for more frogs in play than a browser host.
-const MAX_BODIES = 72;
+// Frogs in play at once in real-time rounds; kept low for the free plan's 0.1 CPU.
+const MAX_BODIES = Number(process.env.MAX_BODIES) || 40;
 const TICK_MS = 1000 / 60;
 const SNAPSHOT_MS = 50;
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ";

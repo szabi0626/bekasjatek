@@ -3,8 +3,8 @@ services:
   - type: web
     name: bekasjatek
     runtime: node
-    # Starter: 0.5 CPU, always on (~$7/month). The free plan (0.1 CPU) makes the game stutter.
-    plan: starter
+    # Free plan: 0.1 CPU, sleeps when idle. Starter (0.5 CPU, ~$7/month) gives headroom for bigger games.
+    plan: free
     buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /healthz
