@@ -11,6 +11,7 @@ const SNAPSHOT_MS = 50;
 const AIM_MS = 66;
 // Snapshots are shown this far (s) behind the newest, so there is always one to blend towards.
 const INTERP_DELAY = 0.12;
+const FADE_TIME = 0.3;
 
 const clamp = THREE.MathUtils.clamp;
 
@@ -220,9 +221,21 @@ export function createEngine(host, opts) {
     }
     for (const [id, view] of views) {
       if (!seen.has(id)) {
-        view.removeFromParent();
         views.delete(id);
+        fading.push({ view, life: FADE_TIME });
       }
+    }
+  }
+  // Frogs that left the game shrink away instead of vanishing.
+  const fading = [];
+  function fade(dt) {
+    for (let k = fading.length - 1; k >= 0; k--) {
+      const f = fading[k];
+      f.life -= dt;
+      if (f.life <= 0) {
+        f.view.removeFromParent();
+        fading.splice(k, 1);
+      } else f.view.scale.setScalar(f.life / FADE_TIME);
     }
   }
 
@@ -375,6 +388,7 @@ export function createEngine(host, opts) {
     }
 
     // When this device starts driving a launcher, pick up its aim where it stands.
+    fade(dt);
     const mine = myTurn();
     const ctl = controlled();
     if (mine && (!own.wasMyTurn || ctl !== own.lastControlled) && v.l[ctl]) clampOwn(v.l[ctl][0], v.l[ctl][1]);

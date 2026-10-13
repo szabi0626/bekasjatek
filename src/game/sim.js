@@ -11,6 +11,8 @@ const READY_DELAY = 1.2;
 const RT_RELOAD = 0.45;
 const RT_COUNTDOWN = 3;
 const MAX_BODIES = 48;
+// Seconds a frog stays visible after touching the ground.
+const GROUND_LINGER = 0.4;
 
 export const SOLO_MESSAGE = "Célozz, tölts, és figyeld a forgó leveleket!";
 
@@ -293,12 +295,14 @@ export function createSim(options) {
         const sx = centre.x - treeCentre.x;
         const sz = centre.z - treeCentre.z;
         if (centre.y - h.r < 0 && centre.y > -0.3 && sx * sx + sz * sz < stageRadius * stageRadius) {
+          b.groundedAt ??= g.time;
           const point = new THREE.Vector3(centre.x, 0, centre.z);
           contacts.push(makeContact(b, null, point, new THREE.Vector3(0, 1, 0),
             -(centre.y - h.r), new THREE.Vector3(), 0.8, 0.15));
         }
         // Infinite floor beneath the raised tabletop.
         if (centre.y - h.r < -0.25) {
+          b.groundedAt ??= g.time;
           const point = new THREE.Vector3(centre.x, -0.25, centre.z);
           contacts.push(makeContact(b, null, point, new THREE.Vector3(0, 1, 0),
             -0.25 - (centre.y - h.r), new THREE.Vector3(), 0.85, 0.15));
@@ -429,17 +433,21 @@ export function createSim(options) {
       }
     }
 
-    if (realtime) {
-      // Frogs resting off the tree are out of the game: clear them away.
-      for (let k = g.bodies.length - 1; k >= 0; k--) {
-        const b = g.bodies[k];
-        const resting = !b.scored && b.v.lengthSq() < 0.16 && b.obj.position.y < 1.5;
-        b.rest = resting ? (b.rest || 0) + dt : 0;
-        if (b.rest > 1.2) {
-          b.obj.removeFromParent();
-          g.bodies.splice(k, 1);
-        }
+    // A frog that reaches the ground is out of the game and disappears shortly after;
+    // so does one that comes to rest below the leaves (e.g. on the tree's pedestal).
+    for (let k = g.bodies.length - 1; k >= 0; k--) {
+      const b = g.bodies[k];
+      if (b.scored) continue;
+      const low = b.obj.position.y < 1.5;
+      const resting = low && b.v.lengthSq() < 0.16;
+      b.rest = resting ? (b.rest || 0) + dt : 0;
+      b.low = low ? (b.low || 0) + dt : 0;
+      if (b.groundedAt !== undefined && g.time - b.groundedAt > GROUND_LINGER || b.rest > 1.2 || b.low > 2) {
+        g.bodies.splice(k, 1);
       }
+    }
+
+    if (realtime) {
       if (!g.announced && g.time >= g.startAt) {
         g.announced = true;
         g.message = "Rajt! Lőj, amennyit csak tudsz!";
@@ -461,6 +469,8 @@ export function createSim(options) {
       if (elapsed > 7 || (elapsed > 3.5 && !moving)) {
         g.finished = true;
         g.charging = false;
+        // Only the frogs holding on to the tree stay on screen for the result.
+        g.bodies = g.bodies.filter(b => b.scored);
         g.message = "Kör vége! A pontszámot a fán megmaradt békák adják.";
       }
     }
