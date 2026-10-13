@@ -2,16 +2,35 @@
 // browser (which draws it) and the game server (which only needs colliders),
 // so nothing here may touch the DOM or WebGL.
 import * as THREE from "three";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
-export const LAUNCH_Z = 6.05;
 export const TREE_CENTRE = new THREE.Vector3(0, 0, -4.2);
 export const TREE_OMEGA = new THREE.Vector3(0, 0.38, 0);
+export const MAX_PLAYERS = 8;
+
+// Tree sizes players can pick; the launchers' circle and the stage grow with the tree.
+export const TREE_SIZES = [
+  { scale: 1, name: "Kicsi" },
+  { scale: 1.3, name: "Közepes" },
+  { scale: 1.6, name: "Nagy" },
+  { scale: 2, name: "Óriás" },
+];
+export function layout(treeScale = 1) {
+  const s = Math.min(2.5, Math.max(0.8, Number(treeScale) || 1));
+  // Distance of the launchers from the tree's axis (10.25 is the original game's).
+  const radius = 10.25 + (s - 1) * 3.5;
+  return { scale: s, radius, stageRadius: radius + 1.6 };
+}
 
 export const FROG_COLORS = [
   { name: "Sárga", main: "#ffcf35", light: "#ffe980", dark: "#df9f18" },
   { name: "Piros", main: "#ff7a5c", light: "#ffbfa8", dark: "#d4472e" },
   { name: "Kék", main: "#4fb4ff", light: "#a9ddff", dark: "#1f7fd0" },
   { name: "Lila", main: "#b77cff", light: "#dcc2ff", dark: "#7f49d6" },
+  { name: "Narancs", main: "#ff9a2e", light: "#ffcd94", dark: "#d06a0c" },
+  { name: "Rózsaszín", main: "#ff7eb9", light: "#ffc3dd", dark: "#d24486" },
+  { name: "Türkiz", main: "#2fd3c3", light: "#a3efe6", dark: "#139a8d" },
+  { name: "Szürke", main: "#9aa3b5", light: "#d3d8e2", dark: "#626b7d" },
 ];
 
 // Compound sphere collision hull: body, head, feet, and eyes.
@@ -69,7 +88,8 @@ function buildTree(triangles) {
  * Builds the field into a new scene. With `visual: false` only the parts that
  * collide are created (no materials, decorations, frogs or launchers).
  */
-export function buildWorld({ visual = true } = {}) {
+export function buildWorld({ visual = true, treeScale = 1 } = {}) {
+  const { scale, stageRadius } = layout(treeScale);
   const scene = new THREE.Scene();
   const geometries = new Set();
   const materials = new Set();
@@ -123,7 +143,13 @@ export function buildWorld({ visual = true } = {}) {
     ), mat, parent);
   }
   const colliders = [];
+  // Colliders are measured once the tree has its final size (see below).
+  const pending = [];
   function collider(object, kind = "tree", friction = 0.7, restitution = 0.23) {
+    pending.push([object, kind, friction, restitution]);
+    return object;
+  }
+  function measure(object, kind, friction, restitution) {
     const geo = object.geometry;
     const pos = geo.attributes.position;
     const index = geo.index;
@@ -167,20 +193,15 @@ export function buildWorld({ visual = true } = {}) {
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.25;
   }
-  // The stage collides analytically as a flat disc (see STAGE in sim.js).
+  // The stage, a disc around the tree, collides analytically (see sim.js).
   if (visual) {
-    const stage = mesh(new THREE.CylinderGeometry(8.7, 8.9, 0.25, 80), M.stage);
-    stage.position.set(0, -0.125, -0.4);
-  }
-
-  if (visual) {
-    for (let i = 0; i < 20; i++) {
+    const stage = mesh(new THREE.CylinderGeometry(stageRadius, stageRadius + 0.2, 0.25, 96), M.stage);
+    stage.position.set(TREE_CENTRE.x, -0.125, TREE_CENTRE.z);
+    for (let i = 0; i < 28; i++) {
       const a = i * 2.399963;
-      const radius = 10 + i % 4;
-      const x = Math.cos(a) * radius;
-      const z = Math.sin(a) * radius - 2;
-      if (z > 5 && Math.abs(x) < 7) continue;
-      oval(scene, M.stone, x, -0.13, z, 0.4 + (i % 3) * 0.15, 0.19, 0.4);
+      const radius = stageRadius + 1.4 + (i % 4) * 1.1;
+      oval(scene, M.stone, TREE_CENTRE.x + Math.cos(a) * radius, -0.13, TREE_CENTRE.z + Math.sin(a) * radius,
+        0.4 + (i % 3) * 0.15, 0.19, 0.4);
     }
   }
 
@@ -253,6 +274,16 @@ export function buildWorld({ visual = true } = {}) {
   crown.position.y = 4.23;
   tree.add(crown);
   leaf(crown, 0.61, 0.74, M.edge);
+  // Grow the whole tree (and its pedestal) by the chosen scale. Scaling every
+  // position and geometry keeps transforms at unit scale, which the collision code expects.
+  if (scale !== 1) {
+    baseGroup.traverse(o => {
+      if (o === baseGroup) return;
+      o.position.multiplyScalar(scale);
+      if (o.isMesh) o.geometry.scale(scale, scale, scale);
+    });
+  }
+  for (const args of pending) measure(...args);
   for (const c of colliders) {
     let p = c.object;
     while (p) {
@@ -261,7 +292,12 @@ export function buildWorld({ visual = true } = {}) {
     }
   }
 
-  function frog(color = 0) {
+  // Each frog is one mesh (vertex-coloured), not ~30, to keep draw calls low with many frogs.
+  const frogMaterial = visual ? material("#ffffff", 0.38) : undefined;
+  if (frogMaterial) frogMaterial.vertexColors = true;
+  const frogGeometries = new Map();
+  function frogGeometry(color) {
+    if (frogGeometries.has(color)) return frogGeometries.get(color);
     const C = FM[color % FM.length];
     const root = new THREE.Group();
     // The rigid body's origin is near the frog's centre of mass.
@@ -283,7 +319,28 @@ export function buildWorld({ visual = true } = {}) {
         oval(g, C.main, s * (0.2 + j * 0.048), 0.04, -0.36 - (j === 1 ? 0.035 : 0), 0.035, 0.026, 0.07);
       }
     }
-    return root;
+    root.updateMatrixWorld(true);
+    const parts = [];
+    root.traverse(o => {
+      if (!o.isMesh) return;
+      const part = sphereGeometry.clone().applyMatrix4(o.matrixWorld);
+      const c = o.material.color;
+      const colours = new Float32Array(part.attributes.position.count * 3);
+      for (let k = 0; k < colours.length; k += 3) colours.set([c.r, c.g, c.b], k);
+      part.setAttribute("color", new THREE.BufferAttribute(colours, 3));
+      parts.push(part);
+    });
+    const merged = mergeGeometries(parts);
+    parts.forEach(p => p.dispose());
+    geometries.add(merged);
+    frogGeometries.set(color, merged);
+    return merged;
+  }
+  function frog(color = 0) {
+    const obj = new THREE.Mesh(frogGeometry(color), frogMaterial);
+    obj.castShadow = true;
+    obj.receiveShadow = true;
+    return obj;
   }
 
   return { scene, tree, colliders, geometries, materials, M, FM, mesh, tube, leaf, frog, material };

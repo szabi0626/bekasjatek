@@ -1,7 +1,7 @@
 // Game rules and physics, without any drawing. Runs in the browser for local
 // play and on the game server for online play (server/index.js).
 import * as THREE from "three";
-import { buildWorld, HULL, LAUNCH_Z, TREE_CENTRE, TREE_OMEGA } from "./world.js";
+import { buildWorld, layout, HULL, TREE_CENTRE, TREE_OMEGA } from "./world.js";
 
 export const STEP = 1 / 120;
 export const GRAVITY = 9.8;
@@ -11,49 +11,71 @@ const READY_DELAY = 1.2;
 const RT_RELOAD = 0.45;
 const RT_COUNTDOWN = 3;
 const MAX_BODIES = 48;
-const STAGE = { x: 0, z: -0.4, r: 8.7 };
 
 export const SOLO_MESSAGE = "Célozz, tölts, és figyeld a forgó leveleket!";
 
 const clamp = THREE.MathUtils.clamp;
+const UP = new THREE.Vector3(0, 1, 0);
 export const round = (x, k = 1000) => Math.round(x * k) / k;
 
-/** Horizontal aiming range of launcher `li` when there are `lanes` launchers. */
-export function laneRange(lanes, li) {
-  if (lanes <= 1) return [-4.2, 4.2];
-  const w = 8.4 / lanes;
-  const a = -4.2 + w * li;
-  return [a + 0.35, a + w - 0.35];
+/**
+ * Where launcher `index` of `count` stands: evenly spaced around the tree,
+ * facing it (a single launcher stands in front). Aim is given in the
+ * launcher's own plane: x sideways (within ±half), y height.
+ */
+export function launchFrame(count, index, treeScale = 1) {
+  const { radius, scale } = layout(treeScale);
+  const angle = count > 1 ? (index / count) * Math.PI * 2 : 0;
+  const half = count > 1 ? Math.min(4.2, Math.PI * radius / count - 0.8) : 4.2;
+  return { angle, radius, scale, half, sin: Math.sin(angle), cos: Math.cos(angle) };
 }
-export function launchOrigin(x, y) {
-  return new THREE.Vector3(x, y + 0.8, LAUNCH_Z - 0.08);
+/** A point `out` from the tree's axis in a launcher's frame, in world space. */
+export function frameToWorld(frame, x, y, out = frame.radius, target = new THREE.Vector3()) {
+  return target.set(
+    TREE_CENTRE.x + x * frame.cos + out * frame.sin,
+    y,
+    TREE_CENTRE.z - x * frame.sin + out * frame.cos,
+  );
 }
-export function launchVelocity(x, power) {
-  return new THREE.Vector3(-x * 0.08, 4.6 + power * 5, -(6.5 + power * 7));
+export function launchOrigin(frame, x, y) {
+  return frameToWorld(frame, x, y + 0.8, frame.radius - 0.08);
+}
+export function launchVelocity(frame, x, power) {
+  // Bigger trees are taller and stand further away: launch harder.
+  const up = (4.6 + power * 5) * Math.sqrt(frame.scale);
+  const sideways = -x * 0.08;
+  const inward = (6.5 + power * 7) * (1 + (frame.scale - 1) * 0.2);
+  return new THREE.Vector3(
+    sideways * frame.cos - inward * frame.sin,
+    up,
+    -sideways * frame.sin - inward * frame.cos,
+  );
 }
 
 /**
- * options: players [{id, name, color}], frogsPerPlayer, realtime, duration (s).
+ * options: players [{id, name, color}], frogsPerPlayer, realtime, duration (s),
+ * treeScale, maxBodies (frogs in play at once in real-time rounds).
  * Players act through input(playerIndex, {kind: "aim"|"shoot", ...}).
  */
 export function createSim(options) {
-  const { scene, tree, colliders } = buildWorld({ visual: false });
+  const treeScale = layout(options.treeScale).scale;
+  const { stageRadius } = layout(treeScale);
+  const { scene, tree, colliders } = buildWorld({ visual: false, treeScale });
+  const maxBodies = Number(options.maxBodies) || MAX_BODIES;
   const players = options.players.map(p => ({ ...p, left: false }));
   const frogsPerPlayer = options.frogsPerPlayer;
   const multi = players.length > 1;
   // Real-time: everyone shoots at once from their own launcher, against the clock.
   const realtime = !!options.realtime && multi;
   const duration = clamp(Number(options.duration) || 60, 10, 600);
-  const lanes = realtime ? players.length : 1;
+  // Every player has a launcher around the tree, in turn-based play too.
+  const frames = players.map((_, i) => launchFrame(players.length, i, treeScale));
   const hull = HULL;
   const treeOmega = TREE_OMEGA;
   const treeCentre = TREE_CENTRE;
 
   // Where each launcher aims and how far it is charged (shown to everyone).
-  const aims = Array.from({ length: lanes }, (_, li) => {
-    const [a, b] = laneRange(lanes, li);
-    return { x: (a + b) / 2, y: 0.65, charging: false, power: 0 };
-  });
+  const aims = players.map(() => ({ x: 0, y: 0.65, charging: false, power: 0 }));
 
   const g = {
     bodies: [], time: 0, turn: 0, startTurn: 0, shots: players.map(() => 0),
@@ -69,7 +91,6 @@ export function createSim(options) {
   const active = i => players[i] && !players[i].left
     && (realtime ? g.time < g.endAt : g.shots[i] < frogsPerPlayer);
   const allDone = () => !players.some((_, i) => active(i));
-  const laneOf = i => (realtime ? i : 0);
   function nextTurn(from) {
     for (let k = 1; k <= players.length; k++) {
       const i = (from + k) % players.length;
@@ -86,20 +107,21 @@ export function createSim(options) {
     for (const b of g.bodies) if (b.scored) s[b.owner]++;
     return s;
   }
-  function setAim(li, x, y) {
-    const [a, b] = laneRange(lanes, li);
-    aims[li].x = clamp(x, a, b);
-    aims[li].y = clamp(y, 0.38, 2.1);
+  function setAim(i, x, y) {
+    aims[i].x = clamp(x, -frames[i].half, frames[i].half);
+    aims[i].y = clamp(y, 0.38, 2.1);
   }
 
   function shoot(i, power, spin) {
-    const aim = aims[laneOf(i)];
+    const aim = aims[i];
     const obj = new THREE.Object3D();
-    obj.position.copy(launchOrigin(aim.x, aim.y));
+    obj.position.copy(launchOrigin(frames[i], aim.x, aim.y));
+    // Face the tree, like the frog sitting on the launcher.
+    obj.rotation.y = frames[i].angle;
     g.bodies.push({
       id: g.nextId++, owner: i, obj,
-      v: launchVelocity(aim.x, clamp(power, 0, 1)),
-      w: new THREE.Vector3(1.5, clamp(spin, -0.35, 0.35), 0),
+      v: launchVelocity(frames[i], aim.x, clamp(power, 0, 1)),
+      w: new THREE.Vector3(1.5, clamp(spin, -0.35, 0.35), 0).applyAxisAngle(UP, frames[i].angle),
       invMass: 1 / 0.6, invInertia: 1 / 0.045,
       support: 0, scored: false, lastLeaf: -100,
       lastImpact: -100,
@@ -111,7 +133,7 @@ export function createSim(options) {
     g.message = multi ? `${name(i)} békája repül…` : "A béka repül — az ütközések döntik el, hol áll meg.";
     if (realtime) {
       g.ready[i] = g.time + RT_RELOAD;
-      if (g.bodies.length > MAX_BODIES) {
+      if (g.bodies.length > maxBodies) {
         // Drop the oldest frog that is not holding on to the tree.
         const k = Math.max(0, g.bodies.findIndex(b => !b.scored));
         g.bodies.splice(k, 1);
@@ -129,13 +151,12 @@ export function createSim(options) {
     const x = Number(data.x);
     const y = Number(data.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-    const li = laneOf(i);
-    setAim(li, x, y);
+    setAim(i, x, y);
     if (data.kind === "aim") {
       const charging = !!data.charging;
-      if (charging && !aims[li].charging && !realtime) g.message = "Tartsd nyomva, majd engedd el!";
-      aims[li].charging = charging;
-      aims[li].power = clamp(Number(data.power) || 0, 0, 1);
+      if (charging && !aims[i].charging && !realtime) g.message = "Tartsd nyomva, majd engedd el!";
+      aims[i].charging = charging;
+      aims[i].power = clamp(Number(data.power) || 0, 0, 1);
     } else if (data.kind === "shoot" && canAct(i)) {
       shoot(i, Number(data.power) || 0, Number(data.spin) || 0);
     }
@@ -151,10 +172,7 @@ export function createSim(options) {
     g.turn = active(g.startTurn) ? g.startTurn : nextTurn(g.startTurn);
     g.message = realtime ? "Új kör! Készülj, indulás 3 másodperc múlva…"
       : multi ? `${name(g.turn)} kezd — célozz és tölts!` : SOLO_MESSAGE;
-    aims.forEach((aim, li) => {
-      const [a, b] = laneRange(lanes, li);
-      Object.assign(aim, { x: (a + b) / 2, y: 0.65, charging: false, power: 0 });
-    });
+    aims.forEach(aim => Object.assign(aim, { x: 0, y: 0.65, charging: false, power: 0 }));
   }
 
   /** Marks players who are no longer connected; their turns are skipped. */
@@ -163,7 +181,7 @@ export function createSim(options) {
     players.forEach(p => { p.left = !present.has(p.id); });
     if (!realtime && !active(g.turn) && !allDone()) {
       g.turn = nextTurn(g.turn);
-      aims[0].charging = false;
+      aims.forEach(aim => { aim.charging = false; });
       g.announced = false;
     }
   }
@@ -271,10 +289,10 @@ export function createSim(options) {
     for (const b of g.bodies) {
       for (const h of hull) {
         centre.copy(h.p).applyQuaternion(b.obj.quaternion).add(b.obj.position);
-        // The raised round stage: a flat disc at y = 0.
-        const sx = centre.x - STAGE.x;
-        const sz = centre.z - STAGE.z;
-        if (centre.y - h.r < 0 && centre.y > -0.3 && sx * sx + sz * sz < STAGE.r * STAGE.r) {
+        // The raised round stage around the tree: a flat disc at y = 0.
+        const sx = centre.x - treeCentre.x;
+        const sz = centre.z - treeCentre.z;
+        if (centre.y - h.r < 0 && centre.y > -0.3 && sx * sx + sz * sz < stageRadius * stageRadius) {
           const point = new THREE.Vector3(centre.x, 0, centre.z);
           contacts.push(makeContact(b, null, point, new THREE.Vector3(0, 1, 0),
             -(centre.y - h.r), new THREE.Vector3(), 0.8, 0.15));
@@ -472,6 +490,8 @@ export function createSim(options) {
   function state(exact = false) {
     const r = exact ? x => x : round;
     return {
+      // Simulation clock: lets screens interpolate by when things happened, not when they arrived.
+      t: round(g.time),
       tree: exact ? tree.rotation.y : round(tree.rotation.y, 10000),
       b: g.bodies.map(b => {
         const p = b.obj.position;
@@ -493,5 +513,5 @@ export function createSim(options) {
     };
   }
 
-  return { players, realtime, lanes, input, reset, setPresent, advance, state, indexOf: id => players.findIndex(p => p.id === id) };
+  return { players, realtime, treeScale, input, reset, setPresent, advance, state, indexOf: id => players.findIndex(p => p.id === id) };
 }

@@ -11,7 +11,9 @@ import { createSim } from "../src/game/sim.js";
 
 const PORT = Number(process.env.PORT) || 8080;
 const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist");
-const MAX_PLAYERS = 4;
+const MAX_PLAYERS = 8;
+// The server has the CPU for more frogs in play than a browser host.
+const MAX_BODIES = 72;
 const TICK_MS = 1000 / 60;
 const SNAPSHOT_MS = 50;
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -117,8 +119,9 @@ function start(room, settings) {
   const frogsPerPlayer = Math.min(10, Math.max(1, Math.round(Number(settings.frogsPerPlayer) || 5)));
   const realtime = !!settings.realtime;
   const duration = Math.min(300, Math.max(10, Math.round(Number(settings.duration) || 60)));
-  room.sim = createSim({ players, frogsPerPlayer, realtime, duration });
-  toAll(room, { t: "fromHost", data: { kind: "start", players, frogsPerPlayer, realtime, duration } });
+  const treeScale = Math.min(2, Math.max(1, Number(settings.treeScale) || 1));
+  room.sim = createSim({ players, frogsPerPlayer, realtime, duration, treeScale, maxBodies: MAX_BODIES });
+  toAll(room, { t: "fromHost", data: { kind: "start", players, frogsPerPlayer, realtime, duration, treeScale } });
   let last = performance.now();
   let nextSnapshot = 0;
   room.timer = setInterval(() => {
@@ -157,7 +160,7 @@ wss.on("connection", ws => {
         const target = rooms.get(String(msg.code || "").toUpperCase().trim());
         if (!target) return send(ws, { t: "error", message: "Nincs ilyen szoba. Ellenőrizd a kódot." });
         if (target.sim) return send(ws, { t: "error", message: "Ebben a szobában már elindult a játék." });
-        if (target.players.size >= MAX_PLAYERS) return send(ws, { t: "error", message: "A szoba megtelt (max. 4 játékos)." });
+        if (target.players.size >= MAX_PLAYERS) return send(ws, { t: "error", message: "A szoba megtelt (max. 8 játékos)." });
         if (room) leave(ws);
         join(ws, target, msg.name);
         break;

@@ -7,7 +7,7 @@
 import mqtt from "mqtt";
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-const MAX_PLAYERS = 4;
+const MAX_PLAYERS = 8;
 const ROOT = "bekasjatek-ff/v1";
 const JOIN_PATIENCE_MS = 60000;
 const JOIN_RETRY_MS = 3000;
@@ -32,6 +32,7 @@ function parse(payload) {
 export class MqttNet {
   constructor() {
     this.kind = "mqtt";
+    this.maxPlayers = MAX_PLAYERS;
     this.handlers = new Map();
     this.closed = false;
     this.ready = Promise.resolve();
@@ -145,7 +146,7 @@ export class MqttNet {
       const known = this.players.has(cid);
       const rejoin = this.started?.has(cid);
       if (!known && this.started && !rejoin) return this.reply(cid, "Ebben a szobában már elindult a játék.");
-      if (!known && !rejoin && this.players.size >= MAX_PLAYERS) return this.reply(cid, "A szoba megtelt (max. 4 játékos).");
+      if (!known && !rejoin && this.players.size >= MAX_PLAYERS) return this.reply(cid, "A szoba megtelt (max. 8 játékos).");
       const player = this.players.get(cid) || { id: cid, name: cleanName(msg.name) };
       this.players.set(cid, player);
       this.publish("down", { t: "joined", to: cid, code: this.code, you: cid, hostId: this.cid, players: this.list() }, { qos: 1 });

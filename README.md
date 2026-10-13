@@ -3,8 +3,10 @@
 3D-s ügyességi játék: lőj békákat a forgó fára, és próbáld meg, hogy minél több fent is maradjon. A társaid békáit pedig lökd le! Három játékmódja van:
 
 - **Egyjátékos**: 10 béka; az a jó, ha minél több marad a fán.
-- **Helyi többjátékos**: 2–4 játékos egy gépen, felváltva lőtök.
-- **Online játék**: szobát hozol létre, és elküldöd a 4 betűs kódot (vagy a meghívó linket) a barátaidnak. Kétféle mód van: **valós idejű** (mindenki egyszerre lő a saját színű katapultjából, amennyit csak tud, amíg le nem jár az idő; 30–120 mp) vagy **felváltva** (fix számú béka fejenként).
+- **Helyi többjátékos**: 2–8 játékos egy gépen, felváltva lőtök. A kamera mindig a soron lévő játékos katapultja mögé fordul.
+
+A fa mérete (kicsi, közepes, nagy, óriás) minden módban választható. Nagyobb fánál messzebbre kerülnek a katapultok, és erősebbet lőnek.
+- **Online játék**: 2–8 játékos a fa körül, mindenki a saját katapultja mögül látja a fát. Szobát hozol létre, és elküldöd a 4 betűs kódot (vagy a meghívó linket) a barátaidnak. Kétféle mód van: **valós idejű** (mindenki egyszerre lő a saját színű katapultjából, amennyit csak tud, amíg le nem jár az idő; 30–120 mp) vagy **felváltva** (fix számú béka fejenként).
 
 ## Futtatás a saját gépeden
 
@@ -27,13 +29,12 @@ npm run dev          # játék a http://localhost:5173 címen
 
 ### A) Render.com: játékszerverrel (ez fut most: https://bekasjatek.onrender.com)
 
-Itt a meccseket a szerver futtatja, így senkinek a gépe nem „házigazda”. Ha valaki kilép, a többiek tovább játszanak. Az ingyenes csomag elég.
+Itt a meccseket a szerver futtatja, így senkinek a gépe nem „házigazda”. Ha valaki kilép, a többiek tovább játszanak. A `render.yaml` a **Starter** csomagot kéri (kb. 7 dollár/hó, 0,5 processzormag, nem alszik el). Az ingyenes csomag 0,1 magja kevés, azzal szaggat a játék. Egy teljes, 8 fős, óriás fás meccs a legrosszabb esetben is csak kb. 0,3 magot használ, így több egyidejű szobához a Standard csomag (1 mag) ajánlott.
 
 1. Regisztrálj a [render.com](https://render.com) oldalon a GitHub-fiókoddal.
 2. **New → Blueprint**, majd válaszd ki a `bekasjatek` repót. A `render.yaml` minden beállítást tartalmaz, csak jóvá kell hagyni.
 3. Pár perc múlva kapsz egy címet, például `https://bekasjatek.onrender.com`. Ezt a linket küldheted a barátaidnak, ott a játék és a szerver is fut.
 
-Az ingyenes szerver 15 perc tétlenség után elalszik. Az első megnyitás ilyenkor fél–egy percig tart, a játék ezt ki is írja.
 
 A GitHub Pages-es oldal is ezt a szervert használja (`wss://bekasjatek.onrender.com/ws`). Ha máshol fut a szerver, a repó **Settings → Secrets and variables → Actions → Variables** menüjében egy `SERVER_URL` változóval átállítható.
 

@@ -32,6 +32,7 @@ export class Net {
   constructor(url = serverUrl()) {
     // The server runs the match: every player, its creator included, is a client.
     this.authoritative = true;
+    this.maxPlayers = 8;
     this.handlers = new Map();
     this.closed = false;
     this.ws = null;
@@ -115,6 +116,8 @@ export class RoomNet {
   constructor(room) {
     this.lobby = room;
     this.kind = "room";
+    // A 4 KiB presence message limits claude.ai rooms to four players.
+    this.maxPlayers = MAX_PLAYERS;
     this.handlers = new Map();
     this.closed = false;
     this.ready = Promise.resolve();

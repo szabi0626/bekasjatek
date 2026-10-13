@@ -1,9 +1,18 @@
 import React, { useEffect, useRef, useState } from "react";
 import Game, { Brand } from "./Game.jsx";
 import { FROG_COLORS } from "./game/engine.js";
+import { TREE_SIZES } from "./game/world.js";
 import { createNet } from "./net.js";
 
-const DEFAULT_NAMES = ["Sárga", "Piros", "Kék", "Lila"];
+const DEFAULT_NAMES = FROG_COLORS.map(c => c.name);
+const DEFAULT_TREE = 1.3;
+
+function storedTree() {
+  try { return Number(localStorage.getItem("ff-tree")) || DEFAULT_TREE; } catch { return DEFAULT_TREE; }
+}
+function storeTree(scale) {
+  try { localStorage.setItem("ff-tree", String(scale)); } catch { /* private mode */ }
+}
 
 function storedName() {
   try { return localStorage.getItem("ff-name") || ""; } catch { return ""; }
@@ -41,7 +50,7 @@ export default function App() {
         if (m.data?.kind !== "start" || !live.current.room) return;
         setGame({
           mode: "client", players: m.data.players, frogsPerPlayer: m.data.frogsPerPlayer,
-          realtime: !!m.data.realtime, duration: m.data.duration,
+          realtime: !!m.data.realtime, duration: m.data.duration, treeScale: m.data.treeScale,
           localPlayerId: live.current.room.you, ownerId: live.current.room.hostId,
         });
         setScreen("game");
@@ -96,12 +105,12 @@ export default function App() {
     n.send(action === "create" ? { t: "create", name } : { t: "join", name, code });
   }
 
-  function startOnline(frogsPerPlayer, realtime, duration) {
+  function startOnline(frogsPerPlayer, realtime, duration, treeScale) {
     // The game server starts the match and tells everyone, this player included.
-    if (net.authoritative) return net.send({ t: "start", frogsPerPlayer, realtime, duration });
+    if (net.authoritative) return net.send({ t: "start", frogsPerPlayer, realtime, duration, treeScale });
     const players = room.players.map((p, i) => ({ id: p.id, name: p.name, color: i }));
-    net.send({ t: "broadcast", lock: true, data: { kind: "start", players, frogsPerPlayer, realtime, duration } });
-    setGame({ mode: "host", players, frogsPerPlayer, realtime, duration, localPlayerId: room.you });
+    net.send({ t: "broadcast", lock: true, data: { kind: "start", players, frogsPerPlayer, realtime, duration, treeScale } });
+    setGame({ mode: "host", players, frogsPerPlayer, realtime, duration, treeScale, localPlayerId: room.you });
     setScreen("game");
   }
 
@@ -120,13 +129,13 @@ export default function App() {
           </header>
           <main className="ff-game ff-menu-bg">
             <div className="ff-panel">
-              {screen === "menu" && <Menu onSolo={() => {
-                setGame({ mode: "local", players: [{ id: "solo", name: "Te", color: 0 }], frogsPerPlayer: 10, localPlayerId: null });
+              {screen === "menu" && <Menu onSolo={treeScale => {
+                setGame({ mode: "local", players: [{ id: "solo", name: "Te", color: 0 }], frogsPerPlayer: 10, treeScale, localPlayerId: null });
                 setScreen("game");
               }} onLocal={() => setScreen("local")} onOnline={() => setScreen("online")}/>}
               {screen === "local" && <LocalSetup onStart={cfg => { setGame(cfg); setScreen("game"); }}/>}
               {screen === "online" && <OnlineSetup error={error} notice={notice} onConnect={connect}/>}
-              {screen === "lobby" && room && <Lobby room={room} error={error} authoritative={!!net?.authoritative} onStart={startOnline} onLeave={toMenu}/>}
+              {screen === "lobby" && room && <Lobby room={room} error={error} authoritative={!!net?.authoritative} maxPlayers={net?.maxPlayers ?? 8} onStart={startOnline} onLeave={toMenu}/>}
             </div>
           </main>
         </>
@@ -135,23 +144,40 @@ export default function App() {
   );
 }
 
+function TreeSize({ value, onChange }) {
+  return (
+    <div className="ff-field">
+      <span>A fa mérete</span>
+      <div className="ff-segment" role="group" aria-label="A fa mérete">
+        {TREE_SIZES.map(t => (
+          <button key={t.scale} className={t.scale === value ? "is-on" : ""} onClick={() => { storeTree(t.scale); onChange(t.scale); }}>
+            {t.name}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Menu({ onSolo, onLocal, onOnline }) {
+  const [tree, setTree] = useState(storedTree);
   return (
     <>
       <div className="ff-eyebrow">● VÁLASSZ JÁTÉKMÓDOT</div>
       <h1 className="ff-panel-title">Ugorj.<br/>Pattanj. Kapaszkodj.</h1>
       <p className="ff-panel-text">Lőj békákat a forgó fára — és lökd le a többiekét!</p>
       <div className="ff-choices">
-        <button className="ff-choice" onClick={onSolo}>
+        <button className="ff-choice" onClick={() => onSolo(tree)}>
           <b>Egyjátékos</b><span>10 béka, a lehető legtöbbet a fára.</span>
         </button>
         <button className="ff-choice" onClick={onLocal}>
-          <b>Helyi többjátékos</b><span>2–4 játékos, egy gépen, felváltva.</span>
+          <b>Helyi többjátékos</b><span>2–8 játékos, egy gépen, felváltva, a fa körül.</span>
         </button>
         <button className="ff-choice" onClick={onOnline}>
-          <b>Online játék</b><span>Hozz létre szobát, és küldd el a kódot a barátaidnak.</span>
+          <b>Online játék</b><span>2–8 játékos a fa körül. Hozz létre szobát, és küldd el a kódot.</span>
         </button>
       </div>
+      <TreeSize value={tree} onChange={setTree}/>
     </>
   );
 }
@@ -171,21 +197,23 @@ function LocalSetup({ onStart }) {
   const [count, setCount] = useState(2);
   const [names, setNames] = useState(DEFAULT_NAMES);
   const [frogs, setFrogs] = useState(5);
+  const [tree, setTree] = useState(storedTree);
   function start() {
     const players = names.slice(0, count).map((n, i) => ({
       id: `p${i}`, name: n.trim().slice(0, 16) || DEFAULT_NAMES[i], color: i,
     }));
-    onStart({ mode: "local", players, frogsPerPlayer: frogs, localPlayerId: null });
+    onStart({ mode: "local", players, frogsPerPlayer: frogs, treeScale: tree, localPlayerId: null });
   }
   return (
     <>
       <div className="ff-eyebrow">● HELYI TÖBBJÁTÉKOS</div>
       <h2 className="ff-panel-title">Ki játszik?</h2>
-      <div className="ff-segment" role="group" aria-label="Játékosok száma">
-        {[2, 3, 4].map(n => (
-          <button key={n} className={n === count ? "is-on" : ""} onClick={() => setCount(n)}>{n} játékos</button>
-        ))}
-      </div>
+      <label className="ff-field">
+        <span>Játékosok száma</span>
+        <select id="ff-count" value={count} onChange={e => setCount(Number(e.target.value))}>
+          {[2, 3, 4, 5, 6, 7, 8].map(n => <option key={n} value={n}>{n} játékos</option>)}
+        </select>
+      </label>
       {names.slice(0, count).map((n, i) => (
         <label key={i} className="ff-field ff-colored" style={{ "--pc": FROG_COLORS[i].main }}>
           <span><i/>{FROG_COLORS[i].name} béka</span>
@@ -193,6 +221,7 @@ function LocalSetup({ onStart }) {
         </label>
       ))}
       <FrogCount value={frogs} onChange={setFrogs}/>
+      <TreeSize value={tree} onChange={setTree}/>
       <button className="ff-replay" onClick={start}>Indulhat a játék ↗</button>
     </>
   );
@@ -231,10 +260,11 @@ function OnlineSetup({ error, notice, onConnect }) {
   );
 }
 
-function Lobby({ room, error, authoritative, onStart, onLeave }) {
+function Lobby({ room, error, authoritative, maxPlayers, onStart, onLeave }) {
   const [frogs, setFrogs] = useState(5);
   const [realtime, setRealtime] = useState(true);
   const [duration, setDuration] = useState(60);
+  const [tree, setTree] = useState(storedTree);
   const [copied, setCopied] = useState(false);
   const isHost = room.you === room.hostId;
   // Inside claude.ai the query string does not reach the page, so share the code instead.
@@ -275,7 +305,7 @@ function Lobby({ room, error, authoritative, onStart, onLeave }) {
             {p.id === room.you && <em>te</em>}
           </li>
         ))}
-        {room.players.length < 4 && <li className="is-empty">Várakozás játékosokra… ({room.players.length}/4)</li>}
+        {room.players.length < maxPlayers && <li className="is-empty">Várakozás játékosokra… ({room.players.length}/{maxPlayers})</li>}
       </ul>
       {isHost ? (
         <>
@@ -298,7 +328,8 @@ function Lobby({ room, error, authoritative, onStart, onLeave }) {
           ) : (
             <FrogCount value={frogs} onChange={setFrogs}/>
           )}
-          <button className="ff-replay" disabled={room.players.length < 2} onClick={() => onStart(frogs, realtime, duration)}>
+          <TreeSize value={tree} onChange={setTree}/>
+          <button className="ff-replay" disabled={room.players.length < 2} onClick={() => onStart(frogs, realtime, duration, tree)}>
             {room.players.length < 2 ? "Legalább 2 játékos kell" : "Játék indítása ↗"}
           </button>
         </>

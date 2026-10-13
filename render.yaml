@@ -1,9 +1,10 @@
-# Render.com Blueprint: one free web service that serves the game and the multiplayer server.
+# Render.com Blueprint: one web service that serves the game and runs the game server.
 services:
   - type: web
     name: bekasjatek
     runtime: node
-    plan: free
+    # Starter: 0.5 CPU, always on (~$7/month). The free plan (0.1 CPU) makes the game stutter.
+    plan: starter
     buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /healthz
