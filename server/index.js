@@ -1,15 +1,19 @@
-// Serves the built game (dist/) and relays messages between players in a room.
-// The room's host runs the physics; this server only forwards messages.
+// The game server: serves the built game (dist/) and runs every room's match.
+// The physics and rules (src/game/sim.js) run here; browsers send aim/shoot
+// input and draw the snapshots they get back 20 times a second.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+import { createSim } from "../src/game/sim.js";
 
 const PORT = Number(process.env.PORT) || 8080;
 const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist");
 const MAX_PLAYERS = 4;
+const TICK_MS = 1000 / 60;
+const SNAPSHOT_MS = 50;
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 
 const MIME = {
@@ -26,7 +30,8 @@ const MIME = {
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://localhost");
   if (url.pathname === "/healthz") {
-    res.writeHead(200, { "content-type": "text/plain" });
+    // Also lets a page on another host (GitHub Pages) wake a sleeping free-tier server.
+    res.writeHead(200, { "content-type": "text/plain", "access-control-allow-origin": "*" });
     res.end(`ok ${rooms.size} rooms`);
     return;
   }
@@ -54,7 +59,7 @@ const server = http.createServer((req, res) => {
   });
 });
 
-/** code -> { code, hostId, started, players: Map<id, { id, name, ws }> } */
+/** code -> { code, ownerId, players: Map<id, { id, name, ws }>, sim, timer } */
 const rooms = new Map();
 
 function newCode() {
@@ -68,14 +73,17 @@ function cleanName(name) {
   return String(name || "").replace(/\s+/g, " ").trim().slice(0, 16) || "Játékos";
 }
 function send(ws, msg) {
-  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
+  if (ws.readyState === ws.OPEN) ws.send(typeof msg === "string" ? msg : JSON.stringify(msg));
+}
+function toAll(room, msg) {
+  const text = JSON.stringify(msg);
+  for (const p of room.players.values()) send(p.ws, text);
 }
 function playerList(room) {
   return [...room.players.values()].map(p => ({ id: p.id, name: p.name }));
 }
 function sendPlayers(room) {
-  const msg = { t: "players", players: playerList(room), hostId: room.hostId };
-  for (const p of room.players.values()) send(p.ws, msg);
+  toAll(room, { t: "players", players: playerList(room), hostId: room.ownerId });
 }
 
 function join(ws, room, name) {
@@ -83,7 +91,7 @@ function join(ws, room, name) {
   room.players.set(player.id, player);
   ws.player = player;
   ws.room = room;
-  send(ws, { t: "joined", code: room.code, you: player.id, hostId: room.hostId, players: playerList(room) });
+  send(ws, { t: "joined", code: room.code, you: player.id, hostId: room.ownerId, players: playerList(room) });
   sendPlayers(room);
   return player;
 }
@@ -93,20 +101,38 @@ function leave(ws) {
   if (!room) return;
   room.players.delete(ws.player.id);
   ws.room = null;
-  if (ws.player.id === room.hostId) {
-    for (const p of room.players.values()) {
-      send(p.ws, { t: "hostLeft" });
-      p.ws.room = null;
-    }
+  if (room.players.size === 0) {
+    clearInterval(room.timer);
     rooms.delete(room.code);
-  } else if (room.players.size === 0) {
-    rooms.delete(room.code);
-  } else {
-    sendPlayers(room);
+    return;
   }
+  // The match goes on without them; the next player takes over the owner's buttons.
+  if (ws.player.id === room.ownerId) room.ownerId = room.players.keys().next().value;
+  room.sim?.setPresent([...room.players.keys()]);
+  sendPlayers(room);
 }
 
-const wss = new WebSocketServer({ server, path: "/ws", maxPayload: 64 * 1024 });
+function start(room, settings) {
+  const players = playerList(room).map((p, i) => ({ ...p, color: i }));
+  const frogsPerPlayer = Math.min(10, Math.max(1, Math.round(Number(settings.frogsPerPlayer) || 5)));
+  const realtime = !!settings.realtime;
+  const duration = Math.min(300, Math.max(10, Math.round(Number(settings.duration) || 60)));
+  room.sim = createSim({ players, frogsPerPlayer, realtime, duration });
+  toAll(room, { t: "fromHost", data: { kind: "start", players, frogsPerPlayer, realtime, duration } });
+  let last = performance.now();
+  let nextSnapshot = 0;
+  room.timer = setInterval(() => {
+    const now = performance.now();
+    room.sim.advance((now - last) / 1000);
+    last = now;
+    if (now >= nextSnapshot) {
+      nextSnapshot = now + SNAPSHOT_MS;
+      toAll(room, { t: "fromHost", data: { kind: "state", s: room.sim.state() } });
+    }
+  }, TICK_MS);
+}
+
+const wss = new WebSocketServer({ server, path: "/ws", maxPayload: 16 * 1024 });
 
 wss.on("connection", ws => {
   ws.alive = true;
@@ -116,21 +142,21 @@ wss.on("connection", ws => {
     try { msg = JSON.parse(raw); } catch { return; }
     if (!msg || typeof msg.t !== "string") return;
     const room = ws.room;
+    const isOwner = room && ws.player.id === room.ownerId;
 
     switch (msg.t) {
       case "create": {
         if (room) leave(ws);
-        const created = { code: newCode(), hostId: null, started: false, players: new Map() };
+        const created = { code: newCode(), ownerId: null, players: new Map(), sim: null, timer: null };
         rooms.set(created.code, created);
-        const player = join(ws, created, msg.name);
-        created.hostId = player.id;
+        created.ownerId = join(ws, created, msg.name).id;
         sendPlayers(created);
         break;
       }
       case "join": {
         const target = rooms.get(String(msg.code || "").toUpperCase().trim());
-        if (!target) return send(ws, { t: "error", message: "Nincs ilyen szoba." });
-        if (target.started) return send(ws, { t: "error", message: "Ebben a szobában már elindult a játék." });
+        if (!target) return send(ws, { t: "error", message: "Nincs ilyen szoba. Ellenőrizd a kódot." });
+        if (target.sim) return send(ws, { t: "error", message: "Ebben a szobában már elindult a játék." });
         if (target.players.size >= MAX_PLAYERS) return send(ws, { t: "error", message: "A szoba megtelt (max. 4 játékos)." });
         if (room) leave(ws);
         join(ws, target, msg.name);
@@ -139,21 +165,16 @@ wss.on("connection", ws => {
       case "leave":
         leave(ws);
         break;
-      // Host -> everyone else in the room.
-      case "broadcast": {
-        if (!room || ws.player.id !== room.hostId) return;
-        if (msg.lock) room.started = true;
-        const out = JSON.stringify({ t: "fromHost", data: msg.data });
-        for (const p of room.players.values()) {
-          if (p.id !== room.hostId && p.ws.readyState === p.ws.OPEN) p.ws.send(out);
-        }
+      case "start":
+        if (isOwner && !room.sim) start(room, msg);
         break;
-      }
-      // Player -> host.
+      case "reset":
+        if (isOwner) room.sim?.reset();
+        break;
       case "toHost": {
-        if (!room || ws.player.id === room.hostId) return;
-        const hostPlayer = room.players.get(room.hostId);
-        if (hostPlayer) send(hostPlayer.ws, { t: "fromPlayer", from: ws.player.id, data: msg.data });
+        if (!room?.sim) return;
+        const i = room.sim.indexOf(ws.player.id);
+        if (i >= 0) room.sim.input(i, msg.data);
         break;
       }
     }

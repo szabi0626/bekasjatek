@@ -39,7 +39,11 @@ export default function App() {
       net.on("notice", m => setNotice(m.message)),
       net.on("fromHost", m => {
         if (m.data?.kind !== "start" || !live.current.room) return;
-        setGame({ mode: "client", players: m.data.players, frogsPerPlayer: m.data.frogsPerPlayer, realtime: !!m.data.realtime, duration: m.data.duration, localPlayerId: live.current.room.you });
+        setGame({
+          mode: "client", players: m.data.players, frogsPerPlayer: m.data.frogsPerPlayer,
+          realtime: !!m.data.realtime, duration: m.data.duration,
+          localPlayerId: live.current.room.you, ownerId: live.current.room.hostId,
+        });
         setScreen("game");
       }),
       net.on("hostLeft", () => {
@@ -75,18 +79,26 @@ export default function App() {
     storeName(name);
     disconnect();
     let n;
+    // A sleeping free-tier server can take up to a minute to wake.
+    const slow = setTimeout(() => setNotice("A játékszerver ébred, ez fél–egy percig is tarthat…"), 2500);
     try {
       n = await createNet();
       await n.ready;
     } catch (e) {
-      setError(`${e.message} Az online játékhoz futnia kell a játékszervernek.`);
+      clearTimeout(slow);
+      setNotice("");
+      setError(`${e.message} Próbáld újra egy kicsit később.`);
       return;
     }
+    clearTimeout(slow);
+    setNotice("");
     setNet(n);
     n.send(action === "create" ? { t: "create", name } : { t: "join", name, code });
   }
 
   function startOnline(frogsPerPlayer, realtime, duration) {
+    // The game server starts the match and tells everyone, this player included.
+    if (net.authoritative) return net.send({ t: "start", frogsPerPlayer, realtime, duration });
     const players = room.players.map((p, i) => ({ id: p.id, name: p.name, color: i }));
     net.send({ t: "broadcast", lock: true, data: { kind: "start", players, frogsPerPlayer, realtime, duration } });
     setGame({ mode: "host", players, frogsPerPlayer, realtime, duration, localPlayerId: room.you });
@@ -114,7 +126,7 @@ export default function App() {
               }} onLocal={() => setScreen("local")} onOnline={() => setScreen("online")}/>}
               {screen === "local" && <LocalSetup onStart={cfg => { setGame(cfg); setScreen("game"); }}/>}
               {screen === "online" && <OnlineSetup error={error} notice={notice} onConnect={connect}/>}
-              {screen === "lobby" && room && <Lobby room={room} error={error} onStart={startOnline} onLeave={toMenu}/>}
+              {screen === "lobby" && room && <Lobby room={room} error={error} authoritative={!!net?.authoritative} onStart={startOnline} onLeave={toMenu}/>}
             </div>
           </main>
         </>
@@ -219,7 +231,7 @@ function OnlineSetup({ error, notice, onConnect }) {
   );
 }
 
-function Lobby({ room, error, onStart, onLeave }) {
+function Lobby({ room, error, authoritative, onStart, onLeave }) {
   const [frogs, setFrogs] = useState(5);
   const [realtime, setRealtime] = useState(true);
   const [duration, setDuration] = useState(60);
@@ -249,7 +261,7 @@ function Lobby({ room, error, onStart, onLeave }) {
         <button className="ff-btn" onClick={copy}>{copied ? "Kimásolva ✓" : inArtifact ? "Kód másolása" : "Meghívó link másolása"}</button>
         {canShare && <button className="ff-btn" onClick={share}>Meghívó küldése…</button>}
       </div>
-      {isHost && !inArtifact && (
+      {isHost && !inArtifact && !authoritative && (
         <p className="ff-notice">
           Tartsd nyitva ezt az oldalt, amíg mindenki be nem lép. Ha telefonon átváltasz egy másik
           alkalmazásra, addig senki nem tud csatlakozni. Visszatérés után a többiek automatikusan bejutnak.

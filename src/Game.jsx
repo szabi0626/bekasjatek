@@ -13,21 +13,26 @@ export default function Game({ config, net, onExit }) {
   const [hud, setHud] = useState(null);
   const [help, setHelp] = useState(true);
   const [notice, setNotice] = useState(null);
+  // On the game server the room's owner (whoever created it, or the next player
+  // after they leave) may start a new round.
+  const [ownerId, setOwnerId] = useState(config.ownerId ?? null);
 
   useEffect(() => {
     const e = createEngine(mount.current, {
       ...config,
       onHud: h => (h.error ? setNotice(h.error) : setHud(h)),
       onSnapshot: s => net?.send({ t: "broadcast", data: { kind: "state", s } }),
-      onAim: a => net?.send({ t: "toHost", data: { kind: "aim", ...a } }),
-      onShoot: s => net?.send({ t: "toHost", data: { kind: "shoot", ...s } }),
+      onInput: data => net?.send({ t: "toHost", data }),
     });
     engine.current = e;
     const offs = [];
     if (net && e) {
       offs.push(net.on("fromPlayer", m => e.remoteInput(m.from, m.data)));
       offs.push(net.on("fromHost", m => { if (m.data?.kind === "state") e.applySnapshot(m.data.s); }));
-      offs.push(net.on("players", m => e.setPresent(m.players.map(p => p.id))));
+      offs.push(net.on("players", m => {
+        e.setPresent(m.players.map(p => p.id));
+        setOwnerId(m.hostId);
+      }));
       offs.push(net.on("hostLeft", () => setNotice("A házigazda kilépett, a játék véget ért.")));
       offs.push(net.on("close", () => setNotice("Megszakadt a kapcsolat a szerverrel.")));
     }
@@ -39,7 +44,9 @@ export default function Game({ config, net, onExit }) {
   }, [config, net]);
 
   const solo = config.players.length === 1;
-  const canReset = config.mode !== "client";
+  const serverGame = !!net?.authoritative;
+  const canReset = config.mode !== "client" || (serverGame && ownerId === config.localPlayerId);
+  const restart = () => (serverGame ? net.send({ t: "reset" }) : engine.current?.reset());
   const total = config.frogsPerPlayer;
   const players = hud?.players ?? [];
   const current = players[hud?.turn ?? 0];
@@ -67,7 +74,7 @@ export default function Game({ config, net, onExit }) {
         <div className="ff-badge">3D · FIZIKAI ÜTKÖZÉSEK</div>
         <div className="ff-buttons">
           <button className="ff-btn" onClick={() => setHelp(x => !x)} aria-pressed={help}>Útmutató</button>
-          {canReset && <button className="ff-btn" onClick={() => engine.current?.reset()}>↻ Új kör</button>}
+          {canReset && <button className="ff-btn" onClick={restart}>↻ Új kör</button>}
           <button className="ff-btn" onClick={onExit}>Kilépés</button>
         </div>
       </header>
@@ -168,7 +175,7 @@ export default function Game({ config, net, onExit }) {
                 </>
               )}
               {canReset
-                ? <button className="ff-replay" onClick={() => engine.current?.reset()}>Újra játszom ↗</button>
+                ? <button className="ff-replay" onClick={restart}>Újra játszom ↗</button>
                 : <p>Várakozás, amíg a házigazda új kört indít…</p>}
             </div>
           </div>
@@ -187,7 +194,7 @@ export default function Game({ config, net, onExit }) {
 
       <footer className="ff-footer">
         <span><strong>{solo ? `${total} béka. 4 levél.` : config.realtime ? `${players.length} játékos · ${config.duration ?? 60} mp, korlátlan béka` : `${players.length} játékos · ${total} béka fejenként`}</strong> Pattogás · súrlódás · forgás</span>
-        <span>{canReset ? "R: új kör · " : ""}Esc: töltés megszakítása</span>
+        <span>{canReset && !serverGame ? "R: új kör · " : ""}Esc: töltés megszakítása</span>
       </footer>
     </>
   );

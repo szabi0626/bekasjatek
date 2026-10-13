@@ -19,62 +19,56 @@ npm start          # http://localhost:8080 – a játék és az online szerver e
 Fejlesztés közben, automatikus újratöltéssel:
 
 ```bash
-npm run dev:server   # online szerver a 8080-as porton
+npm run dev:server   # játékszerver a 8080-as porton
 npm run dev          # játék a http://localhost:5173 címen
 ```
 
 ## Kitétel az internetre
 
-### Már most játszható: claude.ai
+### A) Render.com: játékszerverrel (javasolt)
 
-A játék kint van claude.ai Artifactként: https://claude.ai/artifact/QSRF8aic3kmvhtquU7L1d4
-
-Itt az online mód szerver nélkül működik: a claude.ai `room` csatornáján keresztül kommunikálnak a játékosok. A barátaidat az oldal **Share** menüjében hívhatod meg. Ehhez nekik is claude.ai-fiók kell.
-
-Frissítés: `npm run build && node scripts/build-artifact.mjs`, majd a kész `artifact/flippin-frogs.html` fájlt kell újra közzétenni.
-
-### A) Render.com: minden egyben, ingyenes (javasolt)
-
-Itt a játék és az online szerver ugyanazon a címen fut.
+Itt a meccseket a szerver futtatja, így senkinek a gépe nem „házigazda”. Ha valaki kilép, a többiek tovább játszanak. Az ingyenes csomag elég.
 
 1. Regisztrálj a [render.com](https://render.com) oldalon a GitHub-fiókoddal.
-2. Válaszd ezt: **New → Blueprint**, majd add meg ezt a repót. A `render.yaml` minden beállítást tartalmaz.
-3. Pár perc múlva kapsz egy címet, például `https://bekasjatek.onrender.com`. Ezt a linket küldheted a barátaidnak.
+2. **New → Blueprint**, majd válaszd ki a `bekasjatek` repót. A `render.yaml` minden beállítást tartalmaz, csak jóvá kell hagyni.
+3. Pár perc múlva kapsz egy címet, például `https://bekasjatek.onrender.com`. Ezt a linket küldheted a barátaidnak, ott a játék és a szerver is fut.
 
-Az ingyenes csomag szervere 15 perc tétlenség után elalszik. Az első megnyitás ilyenkor kb. 30–60 másodpercig tart.
+Az ingyenes szerver 15 perc tétlenség után elalszik. Az első megnyitás ilyenkor fél–egy percig tart, a játék ezt ki is írja.
 
-### B) GitHub Pages: ingyenes, szerver nélkül, bárkinek
+**A GitHub Pages-es oldal is használhatja ezt a szervert:** a repó **Settings → Secrets and variables → Actions → Variables** menüjében hozz létre egy `SERVER_URL` változót, például `wss://bekasjatek.onrender.com/ws` értékkel. Utána futtasd újra az **Actions → GitHub Pages** workflow-t.
 
-A `main` ágra pusholt változásokat a `.github/workflows/pages.yml` workflow automatikusan kiteszi a `https://szabi0626.github.io/bekasjatek/` címre. Ehhez egyszer be kell állítani:
+### B) GitHub Pages: szerver nélkül
 
-1. **Settings → General → Danger Zone → Change visibility → Public**. Ingyenes fióknál a Pages csak publikus repóval működik.
-2. **Settings → Pages → Build and deployment → Source: GitHub Actions**.
-3. **Actions → GitHub Pages → Run workflow**, vagy pusholj valamit a `main` ágra.
+A `main` ágra pusholt változások automatikusan kikerülnek a https://szabi0626.github.io/bekasjatek/ címre. Ha nincs megadva `SERVER_URL`, az online mód egy ingyenes, nyilvános MQTT üzenetközvetítőn megy (EMQX, HiveMQ vagy Mosquitto, amelyik elérhető). Ilyenkor a szobát létrehozó játékos böngészője számolja a meccset.
 
-Itt az online mód egy ingyenes, nyilvános MQTT üzenetközvetítőn megy keresztül. Sorban az EMQX, a HiveMQ és a Mosquitto szerverét próbálja, amelyik épp elérhető. Ugyanolyan sima webes kapcsolat, mint egy weboldal megnyitása, ezért bármilyen hálózaton működik, és regisztráció sem kell hozzá. Ha a házigazda telefonon átvált egy másik alkalmazásra, a csatlakozók legfeljebb egy percig várnak rá, és amint visszajön, bejutnak.
+### C) claude.ai
+
+https://claude.ai/artifact/QSRF8aic3kmvhtquU7L1d4 – itt a claude.ai saját valós idejű csatornája köti össze a játékosokat. A barátaidat a **Share** menüben hívhatod meg, és nekik is claude.ai-fiók kell. Frissítés: `npm run build && node scripts/build-artifact.mjs`, majd az `artifact/flippin-frogs.html` újbóli közzététele.
 
 ## Hogyan működik az online mód?
 
 ```
- Házigazda böngészője  ──►  szerver (server/index.js)  ──►  többi játékos böngészője
-  (itt fut a fizika)         csak továbbítja az üzeneteket    (célzás, lövés → házigazda;
-                                                               állapot ← 20× másodpercenként)
+ játékosok böngészői  ── célzás, lövés ──►  játékszerver (server/index.js)
+   (csak rajzolnak)   ◄── állapot 20×/mp ──  (fizika és szabályok: src/game/sim.js)
 ```
 
-- Három szállítási mód van ugyanazzal az üzenetformátummal: saját WebSocket-szerver (Render), nyilvános MQTT-közvetítő (GitHub Pages), és claude.ai-on a `room` csatorna.
-- A szoba létrehozója a **házigazda**. Az ő böngészője számolja a fizikát, és másodpercenként 20-szor elküldi a békák helyzetét a többieknek. A többiek böngészője ezek között simán interpolál.
-- A játékosok célzása és lövése a házigazdához megy. A házigazda ellenőrzi, hogy az adott játékos lőhet-e: valós idejű módban a saját újratöltése lejárt-e, felváltva módban ő következik-e.
-- Ha valaki kilép, a köreit a játék kihagyja. Ha a házigazda lép ki, a játék véget ér.
+- A fizika és a szabályok (`src/game/sim.js`) böngésző nélkül is futnak. Online a szerver számol, helyi játéknál a böngésző.
+- A böngészők a célzást és a lövést küldik. A szerver ellenőrzi, hogy az adott játékos lőhet-e: valós idejű módban lejárt-e a saját újratöltése, felváltva módban ő következik-e.
+- A szerver másodpercenként 20-szor elküldi az állást, a böngészők ezek között simán mozgatják a békákat.
+- Ha valaki kilép, a meccs megy tovább. A szoba gombjait (indítás, új kör) a következő játékos örökli.
+- Szerver nélküli módokban (MQTT, claude.ai) ugyanez a szimuláció a szobát létrehozó játékos böngészőjében fut.
 
 ## Projektszerkezet
 
 | Fájl | Mire való |
 |---|---|
-| `src/game/engine.js` | 3D jelenet, fizika (ütközések, súrlódás, forgó fa), irányítás, hálózati szinkron |
+| `src/game/sim.js` | Játékszabályok és fizika (ütközések, súrlódás, forgó fa); szerveren és böngészőben is fut |
+| `src/game/world.js` | A pálya: színpad, fa, levelek, békák (a szerver csak az ütközőfelületeket építi meg) |
+| `src/game/engine.js` | Kirajzolás és irányítás a böngészőben |
 | `src/Game.jsx` | Játék közbeni felület: pontok, erőmérő, kör vége |
 | `src/App.jsx` | Menü, helyi beállítások, online szoba és váró |
-| `src/net.js`, `src/mqttnet.js` | Hálózat: WebSocket-kliens, MQTT (GitHub Pages), illetve claude.ai-on a `room` csatorna |
-| `server/index.js` | Node szerver: kiszolgálja a játékot és továbbítja a szobák üzeneteit |
+| `src/net.js`, `src/mqttnet.js` | Hálózat: játékszerver (WebSocket), MQTT, illetve claude.ai-on a `room` csatorna |
+| `server/index.js` | Játékszerver: kiszolgálja az oldalt, kezeli a szobákat, és futtatja a meccseket |
 | `render.yaml`, `.github/workflows/pages.yml`, `scripts/build-artifact.mjs` | Telepítési beállítások, egyfájlos build a claude.ai-hoz |
 
 ## Ötletek a továbbfejlesztéshez

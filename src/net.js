@@ -1,4 +1,8 @@
-// Thin WebSocket client for the room relay server (see server/index.js).
+// Online transports. All of them speak the same small message vocabulary
+// (create, join, players, fromHost, toHost, ...), so the app does not care
+// which one is in use.
+
+// WebSocket client for the game server (server/index.js), which runs the match.
 
 export function serverUrl() {
   const configured = import.meta.env.VITE_SERVER_URL;
@@ -7,23 +11,45 @@ export function serverUrl() {
   return `${protocol}//${location.host}/ws`;
 }
 
+const WAKE_TIMEOUT_MS = 90000;
+
+// A free-tier server sleeps when idle and takes up to a minute to start, so
+// knock on its health check until it answers before opening the socket.
+async function wake(url) {
+  const health = url.replace(/^ws/, "http").replace(/\/ws$/, "/healthz");
+  const deadline = Date.now() + WAKE_TIMEOUT_MS;
+  for (;;) {
+    try {
+      const res = await fetch(health, { cache: "no-store" });
+      if (res.ok) return;
+    } catch { /* still asleep, or unreachable */ }
+    if (Date.now() > deadline) throw new Error("A játékszerver nem érhető el.");
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+
 export class Net {
   constructor(url = serverUrl()) {
+    // The server runs the match: every player, its creator included, is a client.
+    this.authoritative = true;
     this.handlers = new Map();
     this.closed = false;
-    this.ws = new WebSocket(url);
-    this.ready = new Promise((resolve, reject) => {
-      this.ws.addEventListener("open", () => resolve(), { once: true });
-      this.ws.addEventListener("error", () => reject(new Error("A szerver nem érhető el.")), { once: true });
-    });
-    this.ws.addEventListener("message", ev => {
-      let msg;
-      try { msg = JSON.parse(ev.data); } catch { return; }
-      if (msg && typeof msg.t === "string") this.emit(msg.t, msg);
-    });
-    this.ws.addEventListener("close", () => {
-      if (!this.closed) this.emit("close", {});
-    });
+    this.ws = null;
+    this.ready = wake(url).then(() => new Promise((resolve, reject) => {
+      if (this.closed) return reject(new Error("Megszakítva."));
+      const ws = new WebSocket(url);
+      this.ws = ws;
+      ws.addEventListener("open", () => resolve(), { once: true });
+      ws.addEventListener("error", () => reject(new Error("A játékszerver nem érhető el.")), { once: true });
+      ws.addEventListener("message", ev => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        if (msg && typeof msg.t === "string") this.emit(msg.t, msg);
+      });
+      ws.addEventListener("close", () => {
+        if (!this.closed) this.emit("close", {});
+      });
+    }));
   }
 
   on(type, fn) {
@@ -37,13 +63,13 @@ export class Net {
   }
 
   send(msg) {
-    if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
   }
 
   close() {
     this.closed = true;
     this.handlers.clear();
-    this.ws.close();
+    this.ws?.close();
   }
 }
 
@@ -72,13 +98,13 @@ export async function roomCapability() {
 
 /**
  * Creates the transport for online play: the claude.ai room when available,
- * a public MQTT broker for static hosting (VITE_NET=mqtt, e.g. GitHub Pages),
- * else the WebSocket server in server/index.js.
+ * else the game server (VITE_SERVER_URL, or the page's own host), else, on
+ * static hosting with no game server configured (VITE_NET=mqtt), a public MQTT broker.
  */
 export async function createNet() {
   const room = await roomCapability();
   if (room) return new RoomNet(room);
-  if (import.meta.env.VITE_NET === "mqtt") {
+  if (import.meta.env.VITE_NET === "mqtt" && !import.meta.env.VITE_SERVER_URL) {
     const { MqttNet } = await import("./mqttnet.js");
     return new MqttNet();
   }
