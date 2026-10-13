@@ -3,6 +3,11 @@ import * as THREE from "three";
 const STEP = 1 / 120;
 const GRAVITY = 9.8;
 const READY_DELAY = 1.2;
+// Timed real-time rounds: short reload, a countdown before the start, and a cap
+// on frogs in play (physics cost, and a 4 KiB snapshot in the claude.ai room).
+const RT_RELOAD = 0.45;
+const RT_COUNTDOWN = 3;
+const MAX_BODIES = 48;
 const SNAPSHOT_MS = 50;
 const AIM_MS = 66;
 const INTERP_DELAY = 110;
@@ -36,6 +41,7 @@ export function createEngine(host, opts) {
   const multi = players.length > 1;
   // Real-time: everyone shoots at once from their own launcher (online only).
   const realtime = !!opts.realtime && multi && mode !== "local";
+  const duration = clamp(Number(opts.duration) || 60, 10, 600);
   const noop = () => {};
   const onHud = opts.onHud || noop;
   const onSnapshot = opts.onSnapshot || noop;
@@ -338,9 +344,11 @@ export function createEngine(host, opts) {
   const g = {
     bodies: [], time: 0, turn: 0, startTurn: 0, shots: players.map(() => 0),
     charging: false, chargeStart: 0, power: 0,
-    readyAt: 0, ready: players.map(() => 0), lastShotAt: 0, finished: false, disposed: false, announced: true,
+    readyAt: 0, ready: players.map(() => RT_COUNTDOWN), lastShotAt: 0, finished: false, disposed: false, announced: !realtime,
+    // Real-time round window (simulation seconds).
+    startAt: RT_COUNTDOWN, endAt: RT_COUNTDOWN + duration, timeLeft: duration, countdown: RT_COUNTDOWN,
     message: mode === "client" ? "Kapcsolódás a házigazdához…"
-      : realtime ? "Mindenki egyszerre lő — célozz és tölts!"
+      : realtime ? "Készülj! Indulás 3 másodperc múlva…"
       : multi ? `${players[0].name} kezd — célozz és tölts!` : SOLO_MESSAGE,
     nextPublish: 0, nextSnapshot: 0, nextAim: 0, nextId: 1,
     // Client-only state mirrored from the host.
@@ -353,7 +361,9 @@ export function createEngine(host, opts) {
   const name = i => players[i]?.name ?? "?";
   const meIndex = players.findIndex(p => p.id === localId);
   const isLocal = i => mode === "local" || (players[i] && players[i].id === localId);
-  const active = i => players[i] && !players[i].left && g.shots[i] < frogsPerPlayer;
+  const active = i => players[i] && !players[i].left
+    && (!realtime ? g.shots[i] < frogsPerPlayer
+      : mode === "client" ? g.timeLeft > 0 : g.time < g.endAt);
   const allDone = () => !players.some((_, i) => active(i));
   const laneOf = i => (realtime ? i : 0);
   const ownerOf = li => (realtime ? li : g.turn);
@@ -399,12 +409,21 @@ export function createEngine(host, opts) {
     const [charging, power] = chargeOf(laneOf(Math.max(0, controlled())));
     onHud({
       players: players.map((p, i) => ({
-        ...p, score: s[i] || 0, shotsLeft: Math.max(0, frogsPerPlayer - (g.shots[i] || 0)),
+        ...p, score: s[i] || 0, shots: g.shots[i] || 0,
+        shotsLeft: Math.max(0, frogsPerPlayer - (g.shots[i] || 0)),
       })),
+      timeLeft: realtime ? timeLeft() : null, countdown: realtime ? countdown() : 0,
       realtime, turn: realtime ? -1 : g.turn, myTurn: myTurn(), ready: isReady(), finished: g.finished,
       message: g.message, charging, power,
       waiting: mode === "client" && g.waitingShot,
     });
+  }
+  // Real-time clock as this device sees it (the client mirrors the host's).
+  function timeLeft() {
+    return mode === "client" ? g.timeLeft : Math.max(0, Math.min(duration, g.endAt - g.time));
+  }
+  function countdown() {
+    return mode === "client" ? g.countdown : Math.max(0, Math.ceil(g.startAt - g.time));
   }
   function launchVelocity(L, power) {
     return new THREE.Vector3(-L.group.position.x * 0.08, 4.6 + power * 5, -(6.5 + power * 7));
@@ -442,7 +461,13 @@ export function createEngine(host, opts) {
     L.rc = false;
     L.rp = 0;
     g.message = multi ? `${name(i)} békája repül…` : "A béka repül — az ütközések döntik el, hol áll meg.";
-    if (realtime) g.ready[i] = g.time + READY_DELAY;
+    if (realtime) g.ready[i] = g.time + RT_RELOAD;
+    if (realtime && g.bodies.length > MAX_BODIES) {
+      // Drop the oldest frog that is not holding on to the tree.
+      const k = Math.max(0, g.bodies.findIndex(b => !b.scored));
+      g.bodies[k].obj.removeFromParent();
+      g.bodies.splice(k, 1);
+    }
     else {
       g.readyAt = g.time + READY_DELAY;
       g.turn = nextTurn(i);
@@ -485,10 +510,11 @@ export function createEngine(host, opts) {
     g.startTurn = multi && !realtime ? (g.startTurn + 1) % players.length : 0;
     Object.assign(g, {
       bodies: [], shots: players.map(() => 0), charging: false, power: 0, finished: false,
-      readyAt: g.time, ready: players.map(() => g.time), lastShotAt: g.time, announced: true,
+      readyAt: g.time, ready: players.map(() => g.time + RT_COUNTDOWN), lastShotAt: g.time, announced: !realtime,
+      startAt: g.time + RT_COUNTDOWN, endAt: g.time + RT_COUNTDOWN + duration,
     });
     g.turn = active(g.startTurn) ? g.startTurn : nextTurn(g.startTurn);
-    g.message = realtime ? "Új kör! Mindenki egyszerre lő."
+    g.message = realtime ? "Új kör! Készülj, indulás 3 másodperc múlva…"
       : multi ? `${name(g.turn)} kezd — célozz és tölts!` : SOLO_MESSAGE;
     launchers.forEach((L, li) => {
       const [a, b] = laneRange(li);
@@ -713,13 +739,31 @@ export function createEngine(host, opts) {
       }
     }
 
+    if (realtime) {
+      // Frogs resting off the tree are out of the game: clear them away.
+      for (let k = g.bodies.length - 1; k >= 0; k--) {
+        const b = g.bodies[k];
+        const resting = !b.scored && b.v.lengthSq() < 0.16 && b.obj.position.y < 1.5;
+        b.rest = resting ? (b.rest || 0) + dt : 0;
+        if (b.rest > 1.2) {
+          b.obj.removeFromParent();
+          g.bodies.splice(k, 1);
+        }
+      }
+      if (!g.announced && g.time >= g.startAt) {
+        g.announced = true;
+        g.message = "Rajt! Lőj, amennyit csak tudsz!";
+      }
+      if (g.time >= g.endAt && g.time - dt < g.endAt) g.message = "Lejárt az idő! A békák még mozoghatnak…";
+    }
+
     if (!realtime && !g.announced && g.time >= g.readyAt && !allDone()) {
       g.announced = true;
       if (multi) g.message = `${name(g.turn)} következik — célozz és tölts!`;
     }
 
     if (allDone() && !g.finished) {
-      const elapsed = g.time - g.lastShotAt;
+      const elapsed = g.time - (realtime ? Math.max(g.lastShotAt, g.endAt) : g.lastShotAt);
       const moving = g.bodies.some(b => {
         const expected = new THREE.Vector3().crossVectors(treeOmega, b.obj.position.clone().sub(treeCentre));
         return b.scored ? b.v.clone().sub(expected).length() > 0.9 : b.v.length() > 0.8;
@@ -752,6 +796,8 @@ export function createEngine(host, opts) {
       }),
       turn: g.turn,
       shots: g.shots,
+      tl: round(timeLeft(), 10),
+      cd: countdown(),
       scores: scores(),
       ready: players.map((_, i) => (canAct(i) ? 1 : 0)),
       finished: g.finished ? 1 : 0,
@@ -796,6 +842,8 @@ export function createEngine(host, opts) {
     g.shots = s.shots;
     g.scores = s.scores;
     g.canShoot = s.ready;
+    g.timeLeft = s.tl ?? g.timeLeft;
+    g.countdown = s.cd ?? 0;
     g.finished = !!s.finished;
     g.message = s.msg;
     s.left.forEach((l, i) => { if (players[i]) players[i].left = !!l; });

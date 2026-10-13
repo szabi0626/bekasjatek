@@ -51,8 +51,9 @@ export default function Game({ config, net, onExit }) {
   const realtime = !!hud?.realtime;
   let powerLabel = "KILÖVÉS EREJE";
   if (realtime) {
-    if (hud.charging) powerLabel = "KATAPULT TÖLTÉSE";
-    else if (!hud.myTurn) powerLabel = "ELFOGYTAK A BÉKÁID";
+    if (hud.countdown > 0) powerLabel = "KÉSZÜLJ…";
+    else if (hud.charging) powerLabel = "KATAPULT TÖLTÉSE";
+    else if (!hud.myTurn) powerLabel = "LEJÁRT AZ IDŐ";
     else if (!hud.ready) powerLabel = "ÚJRATÖLTÉS";
   } else if (hud?.charging) powerLabel = hud.myTurn ? "KATAPULT TÖLTÉSE" : `${current?.name ?? ""} TÖLT`;
   else if (hud && players.every(p => p.shotsLeft === 0 || p.left)) powerLabel = "BÉKÁK ELHELYEZKEDÉSE";
@@ -89,6 +90,11 @@ export default function Game({ config, net, onExit }) {
             </div>
           ) : (
             <div className="ff-players">
+              {realtime && (
+                <div className={`ff-timer${hud.timeLeft <= 10 && hud.timeLeft > 0 ? " is-low" : ""}`} aria-label="Hátralévő idő">
+                  <span>IDŐ</span><b>{formatTime(hud.timeLeft)}</b>
+                </div>
+              )}
               {players.map((p, i) => (
                 <div
                   key={p.id}
@@ -96,7 +102,7 @@ export default function Game({ config, net, onExit }) {
                   style={{ "--pc": FROG_COLORS[p.color].main, "--pd": FROG_COLORS[p.color].dark }}
                 >
                   <span className="ff-player-name"><i/>{p.name}{p.id === config.localPlayerId ? " (te)" : ""}</span>
-                  <b>{p.score}</b><small>a fán · {p.left ? "kilépett" : `${p.shotsLeft} béka maradt`}</small>
+                  <b>{p.score}</b><small>a fán · {p.left ? "kilépett" : realtime ? `${p.shots} lövés` : `${p.shotsLeft} béka maradt`}</small>
                 </div>
               ))}
             </div>
@@ -113,10 +119,14 @@ export default function Game({ config, net, onExit }) {
               {solo
                 ? "A békák egymást is lelökhetik. A pontozáshoz legalább 0,7 másodpercig maradjanak a levélen."
                 : realtime
-                  ? "Mindenki egyszerre lő, a saját színű katapultjából. Lökd le a többiek békáit!"
+                  ? "Mindenki egyszerre lő a saját katapultjából, amennyit csak tud, amíg le nem jár az idő. A végén a fán lévő békák számítanak."
                   : "Felváltva lőtök. Lökd le a többiek békáit! Csak a kör végén a fán lévő békák számítanak."}
             </p>
           </aside>
+        )}
+
+        {realtime && hud.countdown > 0 && !hud.finished && (
+          <div className="ff-countdown" aria-live="assertive">{hud.countdown}</div>
         )}
 
         <div className="ff-bottom">
@@ -176,11 +186,16 @@ export default function Game({ config, net, onExit }) {
       </main>
 
       <footer className="ff-footer">
-        <span><strong>{solo ? `${total} béka. 4 levél.` : `${players.length} játékos · ${total} béka fejenként`}</strong> Pattogás · súrlódás · forgás</span>
+        <span><strong>{solo ? `${total} béka. 4 levél.` : config.realtime ? `${players.length} játékos · ${config.duration ?? 60} mp, korlátlan béka` : `${players.length} játékos · ${total} béka fejenként`}</strong> Pattogás · súrlódás · forgás</span>
         <span>{canReset ? "R: új kör · " : ""}Esc: töltés megszakítása</span>
       </footer>
     </>
   );
+}
+
+function formatTime(seconds = 0) {
+  const t = Math.ceil(Math.max(0, seconds));
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
 }
 
 export function Brand() {

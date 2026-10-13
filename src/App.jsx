@@ -37,7 +37,7 @@ export default function App() {
       net.on("error", m => setError(m.message)),
       net.on("fromHost", m => {
         if (m.data?.kind !== "start" || !live.current.room) return;
-        setGame({ mode: "client", players: m.data.players, frogsPerPlayer: m.data.frogsPerPlayer, realtime: !!m.data.realtime, localPlayerId: live.current.room.you });
+        setGame({ mode: "client", players: m.data.players, frogsPerPlayer: m.data.frogsPerPlayer, realtime: !!m.data.realtime, duration: m.data.duration, localPlayerId: live.current.room.you });
         setScreen("game");
       }),
       net.on("hostLeft", () => {
@@ -83,10 +83,10 @@ export default function App() {
     n.send(action === "create" ? { t: "create", name } : { t: "join", name, code });
   }
 
-  function startOnline(frogsPerPlayer, realtime) {
+  function startOnline(frogsPerPlayer, realtime, duration) {
     const players = room.players.map((p, i) => ({ id: p.id, name: p.name, color: i }));
-    net.send({ t: "broadcast", lock: true, data: { kind: "start", players, frogsPerPlayer, realtime } });
-    setGame({ mode: "host", players, frogsPerPlayer, realtime, localPlayerId: room.you });
+    net.send({ t: "broadcast", lock: true, data: { kind: "start", players, frogsPerPlayer, realtime, duration } });
+    setGame({ mode: "host", players, frogsPerPlayer, realtime, duration, localPlayerId: room.you });
     setScreen("game");
   }
 
@@ -218,6 +218,7 @@ function OnlineSetup({ error, onConnect }) {
 function Lobby({ room, error, onStart, onLeave }) {
   const [frogs, setFrogs] = useState(5);
   const [realtime, setRealtime] = useState(true);
+  const [duration, setDuration] = useState(60);
   const [copied, setCopied] = useState(false);
   const isHost = room.you === room.hostId;
   // Inside claude.ai the query string does not reach the page, so share the code instead.
@@ -252,10 +253,21 @@ function Lobby({ room, error, onStart, onLeave }) {
             <button className={!realtime ? "is-on" : ""} onClick={() => setRealtime(false)}>Felváltva</button>
           </div>
           <p className="ff-panel-text">
-            {realtime ? "Mindenki egyszerre lő, saját katapultból." : "Egymás után lőtök, egy katapultból."}
+            {realtime
+              ? "Mindenki egyszerre lő a saját katapultjából, amennyit csak tud, amíg le nem jár az idő."
+              : "Egymás után lőtök, egy katapultból."}
           </p>
-          <FrogCount value={frogs} onChange={setFrogs}/>
-          <button className="ff-replay" disabled={room.players.length < 2} onClick={() => onStart(frogs, realtime)}>
+          {realtime ? (
+            <label className="ff-field">
+              <span>Játékidő</span>
+              <select id="ff-duration" value={duration} onChange={e => setDuration(Number(e.target.value))}>
+                {[30, 60, 90, 120].map(n => <option key={n} value={n}>{n} másodperc</option>)}
+              </select>
+            </label>
+          ) : (
+            <FrogCount value={frogs} onChange={setFrogs}/>
+          )}
+          <button className="ff-replay" disabled={room.players.length < 2} onClick={() => onStart(frogs, realtime, duration)}>
             {room.players.length < 2 ? "Legalább 2 játékos kell" : "Játék indítása ↗"}
           </button>
         </>

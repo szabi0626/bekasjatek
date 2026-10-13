@@ -4,7 +4,7 @@
 
 - **Egyjátékos**: 10 béka; az a jó, ha minél több marad a fán.
 - **Helyi többjátékos**: 2–4 játékos egy gépen, felváltva lőtök.
-- **Online játék**: szobát hozol létre, és elküldöd a 4 betűs kódot (vagy a meghívó linket) a barátaidnak. Kétféle mód van: **valós idejű** (mindenki egyszerre lő a saját színű katapultjából) vagy **felváltva**.
+- **Online játék**: szobát hozol létre, és elküldöd a 4 betűs kódot (vagy a meghívó linket) a barátaidnak. Kétféle mód van: **valós idejű** (mindenki egyszerre lő a saját színű katapultjából, amennyit csak tud, amíg le nem jár az idő; 30–120 mp) vagy **felváltva** (fix számú béka fejenként).
 
 ## Futtatás a saját gépeden
 
