@@ -51,7 +51,7 @@ A `main` ágra pusholt változásokat a `.github/workflows/pages.yml` workflow a
 2. **Settings → Pages → Build and deployment → Source: GitHub Actions**.
 3. **Actions → GitHub Pages → Run workflow**, vagy pusholj valamit a `main` ágra.
 
-Itt az online mód közvetlen, böngészők közötti (WebRTC) kapcsolattal megy. A kapcsolat felépítéséhez az ingyenes, nyilvános PeerJS-szervert használja, a játék adatai már közvetlenül a játékosok gépei között mennek. Ritkán előfordul, hogy szigorú céges vagy mobilhálózat nem engedi a közvetlen kapcsolatot. Ilyenkor a Render-es változat (A) biztosan működik.
+Itt az online mód egy ingyenes, nyilvános MQTT üzenetközvetítőn megy keresztül. Sorban az EMQX, a HiveMQ és a Mosquitto szerverét próbálja, amelyik épp elérhető. Ugyanolyan sima webes kapcsolat, mint egy weboldal megnyitása, ezért bármilyen hálózaton működik, és regisztráció sem kell hozzá. Ha a házigazda telefonon átvált egy másik alkalmazásra, a csatlakozók legfeljebb egy percig várnak rá, és amint visszajön, bejutnak.
 
 ## Hogyan működik az online mód?
 
@@ -61,7 +61,7 @@ Itt az online mód közvetlen, böngészők közötti (WebRTC) kapcsolattal megy
                                                                állapot ← 20× másodpercenként)
 ```
 
-- Három szállítási mód van ugyanazzal az üzenetformátummal: saját WebSocket-szerver (Render), böngészők közötti WebRTC (GitHub Pages), és claude.ai-on a `room` csatorna.
+- Három szállítási mód van ugyanazzal az üzenetformátummal: saját WebSocket-szerver (Render), nyilvános MQTT-közvetítő (GitHub Pages), és claude.ai-on a `room` csatorna.
 - A szoba létrehozója a **házigazda**. Az ő böngészője számolja a fizikát, és másodpercenként 20-szor elküldi a békák helyzetét a többieknek. A többiek böngészője ezek között simán interpolál.
 - A játékosok célzása és lövése a házigazdához megy. A házigazda ellenőrzi, hogy az adott játékos lőhet-e: valós idejű módban a saját újratöltése lejárt-e, felváltva módban ő következik-e.
 - Ha valaki kilép, a köreit a játék kihagyja. Ha a házigazda lép ki, a játék véget ér.
@@ -73,7 +73,7 @@ Itt az online mód közvetlen, böngészők közötti (WebRTC) kapcsolattal megy
 | `src/game/engine.js` | 3D jelenet, fizika (ütközések, súrlódás, forgó fa), irányítás, hálózati szinkron |
 | `src/Game.jsx` | Játék közbeni felület: pontok, erőmérő, kör vége |
 | `src/App.jsx` | Menü, helyi beállítások, online szoba és váró |
-| `src/net.js`, `src/peernet.js` | Hálózat: WebSocket-kliens, WebRTC (PeerJS), illetve claude.ai-on a `room` csatorna |
+| `src/net.js`, `src/mqttnet.js` | Hálózat: WebSocket-kliens, MQTT (GitHub Pages), illetve claude.ai-on a `room` csatorna |
 | `server/index.js` | Node szerver: kiszolgálja a játékot és továbbítja a szobák üzeneteit |
 | `render.yaml`, `.github/workflows/pages.yml`, `scripts/build-artifact.mjs` | Telepítési beállítások, egyfájlos build a claude.ai-hoz |
 

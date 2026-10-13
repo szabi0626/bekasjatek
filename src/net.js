@@ -72,15 +72,15 @@ export async function roomCapability() {
 
 /**
  * Creates the transport for online play: the claude.ai room when available,
- * peer-to-peer WebRTC for static hosting (VITE_NET=peer, e.g. GitHub Pages),
+ * a public MQTT broker for static hosting (VITE_NET=mqtt, e.g. GitHub Pages),
  * else the WebSocket server in server/index.js.
  */
 export async function createNet() {
   const room = await roomCapability();
   if (room) return new RoomNet(room);
-  if (import.meta.env.VITE_NET === "peer") {
-    const { PeerNet } = await import("./peernet.js");
-    return new PeerNet();
+  if (import.meta.env.VITE_NET === "mqtt") {
+    const { MqttNet } = await import("./mqttnet.js");
+    return new MqttNet();
   }
   return new Net();
 }

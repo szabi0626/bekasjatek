@@ -1,5 +1,5 @@
 # Publishes the game to GitHub Pages on every push to main.
-# Online play is peer-to-peer (WebRTC via the free PeerJS broker), so no game server is needed.
+# Online play goes through a free public MQTT broker, so no game server is needed.
 name: GitHub Pages
 
 on:
@@ -28,7 +28,7 @@ jobs:
       - run: npm ci
       - run: npm run build
         env:
-          VITE_NET: peer
+          VITE_NET: mqtt
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
