@@ -4,7 +4,7 @@
 
 - **Egyjátékos**: 10 béka; az a jó, ha minél több marad a fán.
 - **Helyi többjátékos**: 2–4 játékos egy gépen, felváltva lőtök.
-- **Online játék**: szobát hozol létre, és elküldöd a 4 betűs kódot (vagy a meghívó linket) a barátaidnak.
+- **Online játék**: szobát hozol létre, és elküldöd a 4 betűs kódot (vagy a meghívó linket) a barátaidnak. Kétféle mód van: **valós idejű** (mindenki egyszerre lő a saját színű katapultjából) vagy **felváltva**.
 
 ## Futtatás a saját gépeden
 
@@ -43,12 +43,15 @@ Itt a játék és az online szerver ugyanazon a címen fut.
 
 Az ingyenes csomag szervere 15 perc tétlenség után elalszik. Az első megnyitás ilyenkor kb. 30–60 másodpercig tart.
 
-### B) GitHub Pages: csak statikus oldal
+### B) GitHub Pages: ingyenes, szerver nélkül, bárkinek
 
-1. A repó oldalán: **Settings → Pages → Source: GitHub Actions**.
-2. Minden `main` ágra pusholt változás után automatikusan frissül a `https://<felhasználónév>.github.io/bekasjatek/` oldal.
+A `main` ágra pusholt változásokat a `.github/workflows/pages.yml` workflow automatikusan kiteszi a `https://szabi0626.github.io/bekasjatek/` címre. Ehhez egyszer be kell állítani:
 
-Itt alapból csak az egyjátékos és a helyi többjátékos mód működik, mert a GitHub Pages nem tud szervert futtatni. Az online módhoz állítsd be a **Settings → Secrets and variables → Actions → Variables** menüben a `SERVER_URL` változót a Renderen futó szerver címére, például `wss://bekasjatek.onrender.com/ws`.
+1. **Settings → General → Danger Zone → Change visibility → Public**. Ingyenes fióknál a Pages csak publikus repóval működik.
+2. **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+3. **Actions → GitHub Pages → Run workflow**, vagy pusholj valamit a `main` ágra.
+
+Itt az online mód közvetlen, böngészők közötti (WebRTC) kapcsolattal megy. A kapcsolat felépítéséhez az ingyenes, nyilvános PeerJS-szervert használja, a játék adatai már közvetlenül a játékosok gépei között mennek. Ritkán előfordul, hogy szigorú céges vagy mobilhálózat nem engedi a közvetlen kapcsolatot. Ilyenkor a Render-es változat (A) biztosan működik.
 
 ## Hogyan működik az online mód?
 
@@ -58,8 +61,9 @@ Itt alapból csak az egyjátékos és a helyi többjátékos mód működik, mer
                                                                állapot ← 20× másodpercenként)
 ```
 
+- Három szállítási mód van ugyanazzal az üzenetformátummal: saját WebSocket-szerver (Render), böngészők közötti WebRTC (GitHub Pages), és claude.ai-on a `room` csatorna.
 - A szoba létrehozója a **házigazda**. Az ő böngészője számolja a fizikát, és másodpercenként 20-szor elküldi a békák helyzetét a többieknek. A többiek böngészője ezek között simán interpolál.
-- Aki soron van, annak a célzása és a lövése a házigazdához megy. A házigazda ellenőrzi, hogy tényleg az a játékos következik-e.
+- A játékosok célzása és lövése a házigazdához megy. A házigazda ellenőrzi, hogy az adott játékos lőhet-e: valós idejű módban a saját újratöltése lejárt-e, felváltva módban ő következik-e.
 - Ha valaki kilép, a köreit a játék kihagyja. Ha a házigazda lép ki, a játék véget ér.
 
 ## Projektszerkezet
@@ -69,7 +73,7 @@ Itt alapból csak az egyjátékos és a helyi többjátékos mód működik, mer
 | `src/game/engine.js` | 3D jelenet, fizika (ütközések, súrlódás, forgó fa), irányítás, hálózati szinkron |
 | `src/Game.jsx` | Játék közbeni felület: pontok, erőmérő, kör vége |
 | `src/App.jsx` | Menü, helyi beállítások, online szoba és váró |
-| `src/net.js` | Hálózat: WebSocket-kliens, illetve claude.ai-on a `room` csatorna |
+| `src/net.js`, `src/peernet.js` | Hálózat: WebSocket-kliens, WebRTC (PeerJS), illetve claude.ai-on a `room` csatorna |
 | `server/index.js` | Node szerver: kiszolgálja a játékot és továbbítja a szobák üzeneteit |
 | `render.yaml`, `.github/workflows/pages.yml`, `scripts/build-artifact.mjs` | Telepítési beállítások, egyfájlos build a claude.ai-hoz |
 

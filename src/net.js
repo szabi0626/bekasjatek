@@ -70,10 +70,19 @@ export async function roomCapability() {
   try { return await window.claude.use("room"); } catch { return null; }
 }
 
-/** Creates the transport for online play: the claude.ai room when available, else the WebSocket server. */
+/**
+ * Creates the transport for online play: the claude.ai room when available,
+ * peer-to-peer WebRTC for static hosting (VITE_NET=peer, e.g. GitHub Pages),
+ * else the WebSocket server in server/index.js.
+ */
 export async function createNet() {
   const room = await roomCapability();
-  return room ? new RoomNet(room) : new Net();
+  if (room) return new RoomNet(room);
+  if (import.meta.env.VITE_NET === "peer") {
+    const { PeerNet } = await import("./peernet.js");
+    return new PeerNet();
+  }
+  return new Net();
 }
 
 export class RoomNet {

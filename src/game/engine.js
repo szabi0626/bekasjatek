@@ -34,6 +34,8 @@ export function createEngine(host, opts) {
   const localId = opts.localPlayerId ?? null;
   const players = opts.players.map(p => ({ ...p, left: false }));
   const multi = players.length > 1;
+  // Real-time: everyone shoots at once from their own launcher (online only).
+  const realtime = !!opts.realtime && multi && mode !== "local";
   const noop = () => {};
   const onHud = opts.onHud || noop;
   const onSnapshot = opts.onSnapshot || noop;
@@ -285,60 +287,79 @@ export function createEngine(host, opts) {
     { p: new THREE.Vector3(-0.17, 0.2, -0.23), r: 0.087 },
     { p: new THREE.Vector3(0.17, 0.2, -0.23), r: 0.087 },
   ];
-  const launcher = new THREE.Group();
-  launcher.position.set(0, 0.65, LAUNCH_Z);
-  scene.add(launcher);
-  const foot = mesh(new THREE.CylinderGeometry(0.64, 0.75, 0.18, 32), M.dark, launcher);
-  foot.position.y = 0.05;
+  // One launcher in turn-based play; one per player, each in its own lane, in real-time play.
   const springPoints = [];
   for (let i = 0; i <= 100; i++) {
     const t = i / 100;
     springPoints.push([Math.cos(t * Math.PI * 10) * 0.16, 0.17 + t * 0.34, Math.sin(t * Math.PI * 10) * 0.16]);
   }
-  const spring = tube(launcher, springPoints, 0.035, M.metal);
-  const paddle = new THREE.Group();
-  paddle.position.y = 0.49;
-  paddle.scale.setScalar(0.53);
-  launcher.add(paddle);
-  leaf(paddle, 1, 1.22, M.yellow, false);
-  // One loaded frog per colour; only the current player's is visible.
-  const loadedFrogs = FROG_COLORS.map((_, i) => {
-    const f = frog(i);
-    f.position.set(0, 0.78, -0.08);
-    f.visible = false;
-    launcher.add(f);
-    return f;
-  });
-
   const dotMat = new THREE.MeshBasicMaterial({ color: "#fff8d7", transparent: true, opacity: 0.75 });
   materials.add(dotMat);
-  const dots = Array.from({ length: 23 }, () => {
-    const d = mesh(new THREE.SphereGeometry(0.045, 7, 5), dotMat);
-    d.castShadow = false;
-    d.visible = false;
-    return d;
-  });
+  const lanes = realtime ? players.length : 1;
+  function laneRange(li) {
+    if (!realtime) return [-4.2, 4.2];
+    const w = 8.4 / lanes;
+    const a = -4.2 + w * li;
+    return [a + 0.35, a + w - 0.35];
+  }
+  function makeLauncher(li) {
+    const [a, b] = laneRange(li);
+    const group = new THREE.Group();
+    group.position.set((a + b) / 2, 0.65, LAUNCH_Z);
+    scene.add(group);
+    const foot = mesh(new THREE.CylinderGeometry(0.64, 0.75, 0.18, 32),
+      realtime ? FM[players[li].color % FM.length].dark : M.dark, group);
+    foot.position.y = 0.05;
+    const spring = tube(group, springPoints, 0.035, M.metal);
+    const paddle = new THREE.Group();
+    paddle.position.y = 0.49;
+    paddle.scale.setScalar(0.53);
+    group.add(paddle);
+    leaf(paddle, 1, 1.22, M.yellow, false);
+    // One loaded frog per colour; only the owner's is visible.
+    const loaded = FROG_COLORS.map((_, i) => {
+      const f = frog(i);
+      f.position.set(0, 0.78, -0.08);
+      f.visible = false;
+      group.add(f);
+      return f;
+    });
+    const dots = Array.from({ length: 23 }, () => {
+      const d = mesh(new THREE.SphereGeometry(0.045, 7, 5), dotMat);
+      d.castShadow = false;
+      d.visible = false;
+      return d;
+    });
+    // rc/rp: charge of a player on another device (host: their input, client: snapshots).
+    return { group, spring, paddle, loaded, dots, target: group.position.clone(), rc: false, rp: 0 };
+  }
+  const launchers = Array.from({ length: lanes }, (_, li) => makeLauncher(li));
 
   const g = {
     bodies: [], time: 0, turn: 0, startTurn: 0, shots: players.map(() => 0),
     charging: false, chargeStart: 0, power: 0,
-    readyAt: 0, lastShotAt: 0, finished: false, disposed: false, announced: true,
-    target: new THREE.Vector3(0, 0.65, LAUNCH_Z),
-    message: mode === "client" ? "Kapcsolódás a házigazdához…" : multi ? `${players[0].name} kezd — célozz és tölts!` : SOLO_MESSAGE,
+    readyAt: 0, ready: players.map(() => 0), lastShotAt: 0, finished: false, disposed: false, announced: true,
+    message: mode === "client" ? "Kapcsolódás a házigazdához…"
+      : realtime ? "Mindenki egyszerre lő — célozz és tölts!"
+      : multi ? `${players[0].name} kezd — célozz és tölts!` : SOLO_MESSAGE,
     nextPublish: 0, nextSnapshot: 0, nextAim: 0, nextId: 1,
-    // Charge of a player on another device (host: from their input, client: from snapshots).
-    remote: { charging: false, power: 0 },
     // Client-only state mirrored from the host.
-    ready: false, scores: players.map(() => 0), waitingShot: false, waitingSince: 0, lastTotal: 0,
+    canShoot: players.map(() => false), scores: players.map(() => 0),
+    waitingShot: false, waitingSince: 0, lastMine: 0,
   };
   const treeCentre = new THREE.Vector3(0, 0, -4.2);
   const treeOmega = new THREE.Vector3(0, 0.38, 0);
 
   const name = i => players[i]?.name ?? "?";
+  const meIndex = players.findIndex(p => p.id === localId);
   const isLocal = i => mode === "local" || (players[i] && players[i].id === localId);
   const active = i => players[i] && !players[i].left && g.shots[i] < frogsPerPlayer;
   const allDone = () => !players.some((_, i) => active(i));
-  const myTurn = () => !g.finished && active(g.turn) && isLocal(g.turn);
+  const laneOf = i => (realtime ? i : 0);
+  const ownerOf = li => (realtime ? li : g.turn);
+  // The player whose launcher this device's mouse drives.
+  const controlled = () => (realtime ? meIndex : g.turn);
+  const myTurn = () => !g.finished && active(controlled()) && isLocal(controlled());
   function nextTurn(from) {
     for (let k = 1; k <= players.length; k++) {
       const i = (from + k) % players.length;
@@ -346,9 +367,17 @@ export function createEngine(host, opts) {
     }
     return from;
   }
+  // Host/local view: may player i shoot right now?
+  function canAct(i) {
+    if (g.finished || !active(i)) return false;
+    return realtime ? g.time >= g.ready[i] : i === g.turn && g.time >= g.readyAt;
+  }
+  function canShoot(i) {
+    return mode === "client" ? !!g.canShoot[i] && !g.finished : canAct(i);
+  }
   function isReady() {
-    if (mode === "client") return g.ready && !g.waitingShot && !g.finished;
-    return !g.finished && g.time >= g.readyAt && active(g.turn);
+    const i = controlled();
+    return canShoot(i) && !(mode === "client" && g.waitingShot);
   }
   function scores() {
     if (mode === "client") return g.scores;
@@ -356,40 +385,49 @@ export function createEngine(host, opts) {
     for (const b of g.bodies) if (b.scored) s[b.owner]++;
     return s;
   }
-  const remoteTurn = () => mode !== "local" && !isLocal(g.turn);
-  const chargeShown = () => g.charging || (remoteTurn() && g.remote.charging);
-  const powerShown = () => g.charging ? g.power : remoteTurn() && g.remote.charging ? g.remote.power : 0;
+  // Charge shown on launcher li: this device's own, or a remote player's.
+  function chargeOf(li) {
+    if (g.charging && li === laneOf(controlled())) return [true, g.power];
+    const L = launchers[li];
+    if (mode !== "local" && !isLocal(ownerOf(li)) && L.rc) return [true, L.rp];
+    return [false, 0];
+  }
 
   function publish() {
     if (g.disposed) return;
     const s = scores();
+    const [charging, power] = chargeOf(laneOf(Math.max(0, controlled())));
     onHud({
       players: players.map((p, i) => ({
         ...p, score: s[i] || 0, shotsLeft: Math.max(0, frogsPerPlayer - (g.shots[i] || 0)),
       })),
-      turn: g.turn, myTurn: myTurn(), ready: isReady(), finished: g.finished,
-      message: g.message, charging: chargeShown(), power: powerShown(),
+      realtime, turn: realtime ? -1 : g.turn, myTurn: myTurn(), ready: isReady(), finished: g.finished,
+      message: g.message, charging, power,
       waiting: mode === "client" && g.waitingShot,
     });
   }
-  function launchVelocity(power) {
-    return new THREE.Vector3(-launcher.position.x * 0.08, 4.6 + power * 5, -(6.5 + power * 7));
+  function launchVelocity(L, power) {
+    return new THREE.Vector3(-L.group.position.x * 0.08, 4.6 + power * 5, -(6.5 + power * 7));
   }
-  function launchOrigin() {
-    return new THREE.Vector3(launcher.position.x, launcher.position.y + 0.8, launcher.position.z - 0.08);
+  function launchOrigin(L) {
+    const p = L.group.position;
+    return new THREE.Vector3(p.x, p.y + 0.8, p.z - 0.08);
   }
-  function clampTarget(x, y) {
-    g.target.set(clamp(x, -4.2, 4.2), clamp(y, 0.38, 2.1), LAUNCH_Z);
+  function clampTarget(li, x, y) {
+    const [a, b] = laneRange(li);
+    launchers[li].target.set(clamp(x, a, b), clamp(y, 0.38, 2.1), LAUNCH_Z);
   }
   function shoot(i, x, y, power, spin) {
-    clampTarget(x, y);
-    launcher.position.copy(g.target);
+    const li = laneOf(i);
+    const L = launchers[li];
+    clampTarget(li, x, y);
+    L.group.position.copy(L.target);
     const obj = frog(players[i].color);
-    obj.position.copy(launchOrigin());
+    obj.position.copy(launchOrigin(L));
     scene.add(obj);
     g.bodies.push({
       id: g.nextId++, owner: i, obj,
-      v: launchVelocity(clamp(power, 0, 1)),
+      v: launchVelocity(L, clamp(power, 0, 1)),
       w: new THREE.Vector3(1.5, clamp(spin, -0.35, 0.35), 0),
       invMass: 1 / 0.6, invInertia: 1 / 0.045,
       support: 0, scored: false, lastLeaf: -100,
@@ -397,14 +435,19 @@ export function createEngine(host, opts) {
     });
     g.shots[i]++;
     g.lastShotAt = g.time;
-    g.readyAt = g.time + READY_DELAY;
-    g.charging = false;
-    g.power = 0;
-    g.remote.charging = false;
-    g.remote.power = 0;
+    if (isLocal(i) && controlled() === i) {
+      g.charging = false;
+      g.power = 0;
+    }
+    L.rc = false;
+    L.rp = 0;
     g.message = multi ? `${name(i)} békája repül…` : "A béka repül — az ütközések döntik el, hol áll meg.";
-    g.turn = nextTurn(i);
-    g.announced = false;
+    if (realtime) g.ready[i] = g.time + READY_DELAY;
+    else {
+      g.readyAt = g.time + READY_DELAY;
+      g.turn = nextTurn(i);
+      g.announced = false;
+    }
     publish();
   }
   function sendAim(force = false) {
@@ -412,20 +455,22 @@ export function createEngine(host, opts) {
     const now = performance.now();
     if (!force && now < g.nextAim) return;
     g.nextAim = now + AIM_MS;
-    onAim({ x: round(g.target.x), y: round(g.target.y), charging: g.charging, power: round(g.power) });
+    const t = launchers[laneOf(controlled())].target;
+    onAim({ x: round(t.x), y: round(t.y), charging: g.charging, power: round(g.power) });
   }
   function release() {
     if (!g.charging) return;
     const power = Math.min(1, (performance.now() - g.chargeStart) / 1400);
     const spin = (Math.random() - 0.5) * 0.7;
+    const t = launchers[laneOf(controlled())].target;
     g.charging = false;
     g.power = 0;
     if (mode === "client") {
       g.waitingShot = true;
       g.waitingSince = performance.now();
-      onShoot({ x: round(g.target.x), y: round(g.target.y), power: round(power), spin: round(spin) });
+      onShoot({ x: round(t.x), y: round(t.y), power: round(power), spin: round(spin) });
       publish();
-    } else shoot(g.turn, g.target.x, g.target.y, power, spin);
+    } else shoot(controlled(), t.x, t.y, power, spin);
   }
   function cancel() {
     if (!g.charging) return;
@@ -437,15 +482,19 @@ export function createEngine(host, opts) {
   function reset() {
     if (mode === "client") return;
     for (const b of g.bodies) b.obj.removeFromParent();
-    g.startTurn = multi ? (g.startTurn + 1) % players.length : 0;
+    g.startTurn = multi && !realtime ? (g.startTurn + 1) % players.length : 0;
     Object.assign(g, {
       bodies: [], shots: players.map(() => 0), charging: false, power: 0, finished: false,
-      readyAt: g.time, lastShotAt: g.time, announced: true,
+      readyAt: g.time, ready: players.map(() => g.time), lastShotAt: g.time, announced: true,
     });
-    g.remote.charging = false;
     g.turn = active(g.startTurn) ? g.startTurn : nextTurn(g.startTurn);
-    g.message = multi ? `${name(g.turn)} kezd — célozz és tölts!` : SOLO_MESSAGE;
-    g.target.set(0, 0.65, LAUNCH_Z);
+    g.message = realtime ? "Új kör! Mindenki egyszerre lő."
+      : multi ? `${name(g.turn)} kezd — célozz és tölts!` : SOLO_MESSAGE;
+    launchers.forEach((L, li) => {
+      const [a, b] = laneRange(li);
+      L.target.set((a + b) / 2, 0.65, LAUNCH_Z);
+      L.rc = false;
+    });
     publish();
   }
 
@@ -664,7 +713,7 @@ export function createEngine(host, opts) {
       }
     }
 
-    if (!g.announced && g.time >= g.readyAt && !allDone()) {
+    if (!realtime && !g.announced && g.time >= g.readyAt && !allDone()) {
       g.announced = true;
       if (multi) g.message = `${name(g.turn)} következik — célozz és tölts!`;
     }
@@ -696,16 +745,18 @@ export function createEngine(host, opts) {
         return [b.id, b.owner, round(p.x, 100), round(p.y, 100), round(p.z, 100),
           round(q.x), round(q.y), round(q.z), round(q.w), b.scored ? 1 : 0];
       }),
-      l: [round(g.target.x), round(g.target.y)],
-      c: chargeShown() ? 1 : 0,
-      p: round(powerShown()),
+      // Per launcher: aim x, aim y, charging, power.
+      l: launchers.map((L, li) => {
+        const [c, p] = chargeOf(li);
+        return [round(L.target.x, 100), round(L.target.y, 100), c ? 1 : 0, round(p, 100)];
+      }),
       turn: g.turn,
       shots: g.shots,
       scores: scores(),
-      ready: isReady() ? 1 : 0,
+      ready: players.map((_, i) => (canAct(i) ? 1 : 0)),
       finished: g.finished ? 1 : 0,
       msg: g.message,
-      left: players.map(p => p.left ? 1 : 0),
+      left: players.map(p => (p.left ? 1 : 0)),
     };
   }
 
@@ -713,15 +764,16 @@ export function createEngine(host, opts) {
   function remoteInput(playerId, data) {
     if (mode !== "host" || !data) return;
     const i = players.findIndex(p => p.id === playerId);
-    if (i < 0 || i !== g.turn || g.finished) return;
+    if (i < 0 || g.finished || !active(i) || (!realtime && i !== g.turn)) return;
     const x = Number(data.x);
     const y = Number(data.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const L = launchers[laneOf(i)];
     if (data.kind === "aim") {
-      clampTarget(x, y);
-      g.remote.charging = !!data.charging;
-      g.remote.power = clamp(Number(data.power) || 0, 0, 1);
-    } else if (data.kind === "shoot" && isReady()) {
+      clampTarget(laneOf(i), x, y);
+      L.rc = !!data.charging;
+      L.rp = clamp(Number(data.power) || 0, 0, 1);
+    } else if (data.kind === "shoot" && canAct(i)) {
       shoot(i, x, y, Number(data.power) || 0, Number(data.spin) || 0);
     }
   }
@@ -732,27 +784,32 @@ export function createEngine(host, opts) {
   const qa = new THREE.Quaternion();
   const qb = new THREE.Quaternion();
   function applySnapshot(s) {
-    if (mode !== "client" || !s || !Array.isArray(s.b)) return;
+    if (mode !== "client" || !s || !Array.isArray(s.b) || !Array.isArray(s.l)) return;
     buffer.push({ at: performance.now(), s, bodies: new Map(s.b.map(a => [a[0], a])) });
     if (buffer.length > 40) buffer.shift();
-    const total = s.shots.reduce((a, b) => a + b, 0);
-    if (total !== g.lastTotal) {
-      g.lastTotal = total;
+    const mine = s.shots[meIndex] ?? 0;
+    if (mine !== g.lastMine) {
+      g.lastMine = mine;
       g.waitingShot = false;
     }
     g.turn = s.turn;
     g.shots = s.shots;
     g.scores = s.scores;
-    g.ready = !!s.ready;
+    g.canShoot = s.ready;
     g.finished = !!s.finished;
     g.message = s.msg;
-    g.remote.charging = !!s.c;
-    g.remote.power = s.p;
     s.left.forEach((l, i) => { if (players[i]) players[i].left = !!l; });
-    if (!myTurn()) {
-      g.charging = false;
-      clampTarget(s.l[0], s.l[1]);
-    }
+    const own = laneOf(controlled());
+    launchers.forEach((L, li) => {
+      const remote = s.l[li];
+      if (!remote) return;
+      L.rc = !!remote[2];
+      L.rp = remote[3];
+      // The launcher this player is driving follows the local mouse, not the echo.
+      if (li === own && myTurn()) return;
+      clampTarget(li, remote[0], remote[1]);
+    });
+    if (!myTurn()) g.charging = false;
   }
   function interpolate(now) {
     if (!buffer.length) return;
@@ -791,9 +848,9 @@ export function createEngine(host, opts) {
   function setPresent(ids) {
     const present = new Set(ids);
     players.forEach(p => { p.left = !present.has(p.id); });
-    if (mode !== "client" && !active(g.turn) && !allDone()) {
+    if (mode !== "client" && !realtime && !active(g.turn) && !allDone()) {
       g.turn = nextTurn(g.turn);
-      g.remote.charging = false;
+      launchers[0].rc = false;
       g.announced = false;
     }
     publish();
@@ -811,7 +868,7 @@ export function createEngine(host, opts) {
     mouse.set((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1);
     ray.setFromCamera(mouse, camera);
     if (ray.ray.intersectPlane(plane, intersection)) {
-      clampTarget(intersection.x, intersection.y);
+      clampTarget(laneOf(controlled()), intersection.x, intersection.y);
       sendAim();
     }
   }
@@ -819,11 +876,12 @@ export function createEngine(host, opts) {
     if (e.button !== 0 || !myTurn() || !isReady()) return;
     e.preventDefault();
     aim(e);
-    launcher.position.copy(g.target);
+    const L = launchers[laneOf(controlled())];
+    L.group.position.copy(L.target);
     renderer.domElement.setPointerCapture(e.pointerId);
     g.charging = true;
     g.chargeStart = performance.now();
-    g.message = "Tartsd nyomva, majd engedd el!";
+    if (!realtime) g.message = "Tartsd nyomva, majd engedd el!";
     sendAim(true);
     publish();
   }
@@ -875,32 +933,35 @@ export function createEngine(host, opts) {
       }
     } else accumulator = 0;
 
-    launcher.position.lerp(g.target, Math.min(1, dt * 22));
     if (g.charging) {
       g.power = Math.min(1, (now - g.chargeStart) / 1400);
       sendAim();
     }
-    const power = powerShown();
-    const charging = chargeShown();
-    const compression = charging ? power * 0.23 : 0;
-    spring.scale.y = 1 - compression * 1.5;
-    paddle.position.y = 0.49 - compression;
-    const showLoaded = !g.finished && active(g.turn) && isReady();
-    const colour = players[g.turn]?.color ?? 0;
-    loadedFrogs.forEach((f, i) => {
-      f.visible = showLoaded && i === colour;
-      f.position.y = 0.78 - compression;
-    });
-    const origin = launchOrigin();
-    const velocity = launchVelocity(power);
-    dots.forEach((d, i) => {
-      d.visible = charging;
-      if (charging) {
-        const t = (i + 1) * 0.06;
-        d.position.copy(origin).addScaledVector(velocity, t);
-        d.position.y -= 0.5 * GRAVITY * t * t;
-        if (d.position.y < 0.1) d.visible = false;
-      }
+    launchers.forEach((L, li) => {
+      L.group.position.lerp(L.target, Math.min(1, dt * 22));
+      const [charging, power] = chargeOf(li);
+      const compression = charging ? power * 0.23 : 0;
+      L.spring.scale.y = 1 - compression * 1.5;
+      L.paddle.position.y = 0.49 - compression;
+      const owner = ownerOf(li);
+      const ownReady = owner === controlled() && mode === "client" ? isReady() : canShoot(owner);
+      const showLoaded = !g.finished && active(owner) && ownReady;
+      const colour = players[owner]?.color ?? 0;
+      L.loaded.forEach((f, i) => {
+        f.visible = showLoaded && i === colour;
+        f.position.y = 0.78 - compression;
+      });
+      const origin = launchOrigin(L);
+      const velocity = launchVelocity(L, power);
+      L.dots.forEach((d, i) => {
+        d.visible = charging;
+        if (charging) {
+          const t = (i + 1) * 0.06;
+          d.position.copy(origin).addScaledVector(velocity, t);
+          d.position.y -= 0.5 * GRAVITY * t * t;
+          if (d.position.y < 0.1) d.visible = false;
+        }
+      });
     });
     if (now > g.nextPublish) {
       publish();

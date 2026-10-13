@@ -1,6 +1,5 @@
 # Publishes the game to GitHub Pages on every push to main.
-# Single-player and local multiplayer work there on their own; for online play set the
-# repository variable SERVER_URL to the multiplayer server, e.g. wss://bekasjatek.onrender.com/ws
+# Online play is peer-to-peer (WebRTC via the free PeerJS broker), so no game server is needed.
 name: GitHub Pages
 
 on:
@@ -29,7 +28,8 @@ jobs:
       - run: npm ci
       - run: npm run build
         env:
-          VITE_SERVER_URL: ${{ vars.SERVER_URL }}
+          VITE_NET: peer
+      - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

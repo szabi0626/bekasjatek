@@ -48,8 +48,13 @@ export default function Game({ config, net, onExit }) {
   const best = ranking[0]?.score ?? 0;
   const winners = ranking.filter(p => p.score === best && !p.left);
 
+  const realtime = !!hud?.realtime;
   let powerLabel = "KILÖVÉS EREJE";
-  if (hud?.charging) powerLabel = hud.myTurn ? "KATAPULT TÖLTÉSE" : `${current?.name ?? ""} TÖLT`;
+  if (realtime) {
+    if (hud.charging) powerLabel = "KATAPULT TÖLTÉSE";
+    else if (!hud.myTurn) powerLabel = "ELFOGYTAK A BÉKÁID";
+    else if (!hud.ready) powerLabel = "ÚJRATÖLTÉS";
+  } else if (hud?.charging) powerLabel = hud.myTurn ? "KATAPULT TÖLTÉSE" : `${current?.name ?? ""} TÖLT`;
   else if (hud && players.every(p => p.shotsLeft === 0 || p.left)) powerLabel = "BÉKÁK ELHELYEZKEDÉSE";
   else if (hud?.waiting || (hud && !hud.ready)) powerLabel = "ÚJRATÖLTÉS";
   else if (hud && !hud.myTurn) powerLabel = `${current?.name ?? ""} KÖVETKEZIK`;
@@ -71,7 +76,7 @@ export default function Game({ config, net, onExit }) {
         <div className="ff-overlay">
           <div className="ff-title">
             <div className="ff-eyebrow">
-              ● {solo ? "EGYJÁTÉKOS · SÁRGA CSAPAT" : `${MODE_LABEL[config.mode]} · ${players.length} JÁTÉKOS`}
+              ● {solo ? "EGYJÁTÉKOS · SÁRGA CSAPAT" : `${MODE_LABEL[config.mode]}${config.realtime ? " · VALÓS IDEJŰ" : ""} · ${players.length} JÁTÉKOS`}
               {me && <> · TE: <span style={{ color: FROG_COLORS[me.color].dark }}>{me.name}</span></>}
             </div>
             <h1>Ugorj.<br/>Pattanj. Kapaszkodj.</h1>
@@ -107,7 +112,9 @@ export default function Game({ config, net, onExit }) {
             <p className="ff-tip">
               {solo
                 ? "A békák egymást is lelökhetik. A pontozáshoz legalább 0,7 másodpercig maradjanak a levélen."
-                : "Felváltva lőtök. Lökd le a többiek békáit! Csak a kör végén a fán lévő békák számítanak."}
+                : realtime
+                  ? "Mindenki egyszerre lő, a saját színű katapultjából. Lökd le a többiek békáit!"
+                  : "Felváltva lőtök. Lökd le a többiek békáit! Csak a kör végén a fán lévő békák számítanak."}
             </p>
           </aside>
         )}
