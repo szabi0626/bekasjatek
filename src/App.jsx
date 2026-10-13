@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import Game, { Brand } from "./Game.jsx";
 import { FROG_COLORS } from "./game/engine.js";
-import { Net } from "./net.js";
+import { createNet } from "./net.js";
 
 const DEFAULT_NAMES = ["Sárga", "Piros", "Kék", "Lila"];
 
@@ -71,8 +71,9 @@ export default function App() {
     setError("");
     storeName(name);
     disconnect();
-    const n = new Net();
+    let n;
     try {
+      n = await createNet();
       await n.ready;
     } catch (e) {
       setError(`${e.message} Az online játékhoz futnia kell a játékszervernek.`);
@@ -218,7 +219,9 @@ function Lobby({ room, error, onStart, onLeave }) {
   const [frogs, setFrogs] = useState(5);
   const [copied, setCopied] = useState(false);
   const isHost = room.you === room.hostId;
-  const link = `${location.origin}${location.pathname}?room=${room.code}`;
+  // Inside claude.ai the query string does not reach the page, so share the code instead.
+  const inArtifact = !!window.claude;
+  const link = inArtifact ? room.code : `${location.origin}${location.pathname}?room=${room.code}`;
   async function copy() {
     try {
       await navigator.clipboard.writeText(link);
@@ -230,7 +233,7 @@ function Lobby({ room, error, onStart, onLeave }) {
     <>
       <div className="ff-eyebrow">● SZOBA</div>
       <div className="ff-code">{room.code}</div>
-      <button className="ff-btn" onClick={copy}>{copied ? "Link kimásolva ✓" : "Meghívó link másolása"}</button>
+      <button className="ff-btn" onClick={copy}>{copied ? "Kimásolva ✓" : inArtifact ? "Kód másolása" : "Meghívó link másolása"}</button>
       <ul className="ff-lobby">
         {room.players.map((p, i) => (
           <li key={p.id} style={{ "--pc": FROG_COLORS[i].main }}>

@@ -25,6 +25,14 @@ npm run dev          # játék a http://localhost:5173 címen
 
 ## Kitétel az internetre
 
+### Már most játszható: claude.ai
+
+A játék kint van claude.ai Artifactként: https://claude.ai/artifact/QSRF8aic3kmvhtquU7L1d4
+
+Itt az online mód szerver nélkül működik: a claude.ai `room` csatornáján keresztül kommunikálnak a játékosok. A barátaidat az oldal **Share** menüjében hívhatod meg. Ehhez nekik is claude.ai-fiók kell.
+
+Frissítés: `npm run build && node scripts/build-artifact.mjs`, majd a kész `artifact/flippin-frogs.html` fájlt kell újra közzétenni.
+
 ### A) Render.com: minden egyben, ingyenes (javasolt)
 
 Itt a játék és az online szerver ugyanazon a címen fut.
@@ -61,9 +69,9 @@ Itt alapból csak az egyjátékos és a helyi többjátékos mód működik, mer
 | `src/game/engine.js` | 3D jelenet, fizika (ütközések, súrlódás, forgó fa), irányítás, hálózati szinkron |
 | `src/Game.jsx` | Játék közbeni felület: pontok, erőmérő, kör vége |
 | `src/App.jsx` | Menü, helyi beállítások, online szoba és váró |
-| `src/net.js` | WebSocket-kliens |
+| `src/net.js` | Hálózat: WebSocket-kliens, illetve claude.ai-on a `room` csatorna |
 | `server/index.js` | Node szerver: kiszolgálja a játékot és továbbítja a szobák üzeneteit |
-| `render.yaml`, `.github/workflows/pages.yml` | Telepítési beállítások |
+| `render.yaml`, `.github/workflows/pages.yml`, `scripts/build-artifact.mjs` | Telepítési beállítások, egyfájlos build a claude.ai-hoz |
 
 ## Ötletek a továbbfejlesztéshez
 

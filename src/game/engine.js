@@ -692,8 +692,9 @@ export function createEngine(host, opts) {
       b: g.bodies.map(b => {
         const p = b.obj.position;
         const q = b.obj.quaternion;
-        return [b.id, b.owner, round(p.x), round(p.y), round(p.z),
-          round(q.x, 10000), round(q.y, 10000), round(q.z, 10000), round(q.w, 10000), b.scored ? 1 : 0];
+        // Compact enough for 40 frogs to fit a 4 KiB presence message.
+        return [b.id, b.owner, round(p.x, 100), round(p.y, 100), round(p.z, 100),
+          round(q.x), round(q.y), round(q.z), round(q.w), b.scored ? 1 : 0];
       }),
       l: [round(g.target.x), round(g.target.y)],
       c: chargeShown() ? 1 : 0,
