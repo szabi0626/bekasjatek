@@ -7,7 +7,9 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { createSim } from "../src/game/sim.js";
+import { createSim, physicsId, physicsReady } from "../src/game/sim.js";
+import { mapId } from "../src/game/world.js";
+import { loadModels } from "../src/game/models.js";
 
 const PORT = Number(process.env.PORT) || 8080;
 const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist");
@@ -16,9 +18,15 @@ const MAX_PLAYERS = 8;
 const MAX_BODIES = Number(process.env.MAX_BODIES) || 40;
 // 40 ticks a second, a snapshot every second tick (20 a second). Few wake-ups
 // matter on a CPU-limited host, which pauses the process when it uses its share.
+// On a host with CPU to spare, SNAPSHOT_EVERY=1 sends every tick for lower latency.
 const TICK_MS = 25;
-const SNAPSHOT_EVERY = 2;
+const SNAPSHOT_EVERY = Number(process.env.SNAPSHOT_EVERY) || 2;
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+// Lobby chat: messages kept per room (sent to whoever joins later), their
+// length, and the least time between two messages from one player.
+const CHAT_KEEP = 50;
+const CHAT_LENGTH = 200;
+const CHAT_GAP_MS = 400;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -74,7 +82,7 @@ const server = http.createServer((req, res) => {
   });
 });
 
-/** code -> { code, ownerId, players: Map<id, { id, name, ws }>, sim, timer, perf } */
+/** code -> { code, ownerId, players: Map<id, { id, name, ws }>, sim, timer, perf, chat, nextChat } */
 const rooms = new Map();
 
 // Server health, refreshed every second: [avg work per tick ms, worst tick gap ms,
@@ -134,13 +142,22 @@ function sendPlayers(room) {
   toAll(room, { t: "players", players: playerList(room), hostId: room.ownerId });
 }
 
+// A chat line (from: a player's id, or null for a notice such as someone joining).
+function chat(room, from, name, text) {
+  const line = { id: room.nextChat++, from, name, text };
+  room.chat.push(line);
+  if (room.chat.length > CHAT_KEEP) room.chat.shift();
+  toAll(room, { t: "chat", line });
+}
+
 function join(ws, room, name) {
   const player = { id: crypto.randomUUID().slice(0, 8), name: cleanName(name), ws };
   room.players.set(player.id, player);
   ws.player = player;
   ws.room = room;
-  send(ws, { t: "joined", code: room.code, you: player.id, hostId: room.ownerId, players: playerList(room) });
+  send(ws, { t: "joined", code: room.code, you: player.id, hostId: room.ownerId, players: playerList(room), chat: room.chat });
   sendPlayers(room);
+  if (room.players.size > 1) chat(room, null, player.name, `${player.name} belépett.`);
   return player;
 }
 
@@ -151,6 +168,7 @@ function leave(ws) {
   ws.room = null;
   if (room.players.size === 0) {
     clearInterval(room.timer);
+    room.sim?.dispose();
     rooms.delete(room.code);
     return;
   }
@@ -158,6 +176,7 @@ function leave(ws) {
   if (ws.player.id === room.ownerId) room.ownerId = room.players.keys().next().value;
   room.sim?.setPresent([...room.players.keys()]);
   sendPlayers(room);
+  chat(room, null, ws.player.name, `${ws.player.name} kilépett.`);
 }
 
 function start(room, settings) {
@@ -166,8 +185,11 @@ function start(room, settings) {
   const realtime = !!settings.realtime;
   const duration = Math.min(300, Math.max(10, Math.round(Number(settings.duration) || 60)));
   const treeScale = Math.min(2, Math.max(1, Number(settings.treeScale) || 1));
-  room.sim = createSim({ players, frogsPerPlayer, realtime, duration, treeScale, maxBodies: MAX_BODIES });
-  toAll(room, { t: "fromHost", data: { kind: "start", players, frogsPerPlayer, realtime, duration, treeScale } });
+  const reload = settings.reload == null ? undefined : Math.min(3, Math.max(0, Number(settings.reload) || 0));
+  const map = mapId(settings.map);
+  const physics = physicsId(settings.physics);
+  room.sim = createSim({ players, frogsPerPlayer, realtime, duration, treeScale, reload, map, physics, maxBodies: MAX_BODIES });
+  toAll(room, { t: "fromHost", data: { kind: "start", players, frogsPerPlayer, realtime, duration, treeScale, reload, map, physics } });
   let last = performance.now();
   let ticks = 0;
   room.perf = { work: [], gaps: [], lag: 0, started: last, simStart: room.sim.state().t };
@@ -177,7 +199,7 @@ function start(room, settings) {
     room.sim.advance((now - last) / 1000);
     last = now;
     if (++ticks % SNAPSHOT_EVERY === 0) {
-      const s = room.sim.state();
+      const s = room.sim.state(false, 1000);
       s.sv = stats.summary;
       toAll(room, { t: "fromHost", data: { kind: "state", s } });
     }
@@ -202,7 +224,7 @@ wss.on("connection", ws => {
     switch (msg.t) {
       case "create": {
         if (room) leave(ws);
-        const created = { code: newCode(), ownerId: null, players: new Map(), sim: null, timer: null };
+        const created = { code: newCode(), ownerId: null, players: new Map(), sim: null, timer: null, chat: [], nextChat: 1 };
         rooms.set(created.code, created);
         created.ownerId = join(ws, created, msg.name).id;
         sendPlayers(created);
@@ -219,6 +241,19 @@ wss.on("connection", ws => {
       }
       case "leave":
         leave(ws);
+        break;
+      case "chat": {
+        if (!room) return;
+        const text = String(msg.text || "").replace(/\s+/g, " ").trim().slice(0, CHAT_LENGTH);
+        const now = Date.now();
+        if (!text || now - (ws.lastChat || 0) < CHAT_GAP_MS) return;
+        ws.lastChat = now;
+        chat(room, ws.player.id, ws.player.name, text);
+        break;
+      }
+      case "ping":
+        // Round-trip measurement for the in-game readout: echo the client's clock.
+        send(ws, { t: "pong", c: Number(msg.c) || 0 });
         break;
       case "start":
         if (isOwner && !room.sim) start(room, msg);
@@ -249,6 +284,10 @@ setInterval(() => {
   }
 }, 25000);
 
+await physicsReady;
+// The models colliders are made from (the same files the browser loads).
+const PUBLIC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../public");
+await loadModels(file => fs.promises.readFile(path.join(PUBLIC, file)));
 server.listen(PORT, () => {
   console.log(`Békajáték szerver: http://localhost:${PORT}`);
 });

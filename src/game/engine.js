@@ -3,7 +3,7 @@
 // server (or the host's browser) for online play.
 import * as THREE from "three";
 import { buildWorld, layout, FROG_COLORS, TREE_CENTRE, TREE_OMEGA } from "./world.js";
-import { createSim, launchFrame, frameToWorld, launchOrigin, launchVelocity, GRAVITY, SOLO_MESSAGE, round } from "./sim.js";
+import { createSim, launchFrame, frameToWorld, launchOrigin, launchVelocity, launchSpin, randomTumble, GRAVITY, SOLO_MESSAGE, round } from "./sim.js";
 
 export { FROG_COLORS, SOLO_MESSAGE };
 
@@ -11,9 +11,37 @@ const SNAPSHOT_MS = 50;
 const AIM_MS = 66;
 // Snapshots are shown this far (s) behind the newest, so there is always one to
 // blend towards; it adapts to how unevenly they arrive, within these bounds.
-const MIN_DELAY = 0.08;
-const MAX_DELAY = 0.35;
+const MIN_DELAY = 0.05;
+// Some links (e.g. Cloudflare quick tunnels) stall for ~300 ms every few seconds.
+// Smooth motion comes first: the buffer covers the stalls seen in the last
+// LATE_WINDOW snapshots (up to MAX_DELAY), so there is nearly always real data
+// to show. The player's own shots are predicted, so they do not feel the delay.
+const MAX_DELAY = 0.6;
+const LATE_WINDOW = 400;
+const MAX_EXTRAPOLATE = 0.4;
+const FLYING_SPEED = 2;
 const FADE_TIME = 0.3;
+const GRENADE_SIZE = 2;
+const ARMED_NAMES = [null, "gun", "grenade"];
+// A correction (after a network stall, or when the server's copy of a predicted
+// shot takes over) is not shown as a jump: the gap closes at this rate (1/s).
+const SMOOTHING = 9;
+const MAX_SMOOTHED = 3;
+// A predicted shot handed over to the server's copy, which is shown further in
+// the past, is not pulled back: that frog is played ahead in time (from the
+// buffered snapshots) by as much as the prediction was, and the lead runs out
+// at this rate, so it flies only a little (15%) slower until it catches up.
+const LEAD_DECAY = 0.15;
+// The playback clock eases towards where it should be at this rate (1/s), so a
+// change of buffer delay slows or speeds frogs briefly instead of making them jump;
+// it runs at most this much slower or faster than real time, which the eye
+// hardly notices (more made frogs visibly slow down and speed up in the air).
+const CLOCK_EASE = 2.5;
+const MAX_SLOWER = 0.15;
+const MAX_FASTER = 0.1;
+// A predicted shot not taken over by the server's frog within this time disappears.
+const GHOST_LIFE = 1.2;
+const BLAST_TIME = 0.7;
 
 const clamp = THREE.MathUtils.clamp;
 
@@ -30,7 +58,7 @@ export function createEngine(host, opts) {
   const frogsPerPlayer = opts.frogsPerPlayer;
   const localId = opts.localPlayerId ?? null;
   const multi = players.length > 1;
-  const realtime = !!opts.realtime && multi && mode !== "local";
+  const realtime = !!opts.realtime && mode !== "local";
   const duration = clamp(Number(opts.duration) || 60, 10, 600);
   const treeScale = layout(opts.treeScale).scale;
   const noop = () => {};
@@ -54,10 +82,33 @@ export function createEngine(host, opts) {
   renderer.domElement.style.cssText = "display:block;width:100%;height:100%;touch-action:none";
   host.appendChild(renderer.domElement);
 
-  const world = buildWorld({ visual: true, treeScale });
+  // views: how many launchers (cameras) there are, for placing landmarks each can see.
+  const world = buildWorld({ visual: true, treeScale, map: opts.map, views: players.length });
   const { scene, tree, M, FM, mesh, tube, leaf, frog, geometries, materials } = world;
-  scene.background = new THREE.Color("#e9efdf");
-  scene.fog = new THREE.Fog("#e9efdf", 26, 65);
+  // Where the screen guesses a frog's motion (a predicted shot, or carrying on
+  // through a network stall) it must not fly into the tree: the guess stops at
+  // the first surface on its way, a frog's half-size short of it.
+  const solids = world.colliders.map(c => c.object);
+  const FROG_REACH = 0.2;
+  const hitRay = new THREE.Raycaster();
+  const rayDir = new THREE.Vector3();
+  function moveUntilBlocked(pos, to) {
+    rayDir.copy(to).sub(pos);
+    const length = rayDir.length();
+    if (length < 1e-6) return false;
+    rayDir.divideScalar(length);
+    hitRay.set(pos, rayDir);
+    hitRay.far = length + FROG_REACH;
+    const hit = hitRay.intersectObjects(solids, false)[0];
+    if (!hit) {
+      pos.copy(to);
+      return false;
+    }
+    pos.addScaledVector(rayDir, Math.max(0, hit.distance - FROG_REACH));
+    return true;
+  }
+  scene.background = new THREE.Color(world.env.sky);
+  scene.fog = new THREE.Fog(world.env.sky, 26 + (treeScale - 1) * 12, 65 + (treeScale - 1) * 25);
   const camera = new THREE.PerspectiveCamera(43, 1, 0.1, 100);
   scene.add(new THREE.HemisphereLight("#fffce9", "#718a63", 2.5));
   const sun = new THREE.DirectionalLight("#fff0cc", 3.3);
@@ -71,7 +122,7 @@ export function createEngine(host, opts) {
   fill.position.set(8, 6, -8);
   scene.add(fill);
 
-  const sim = mode === "client" ? null : createSim({ players, frogsPerPlayer, realtime, duration, treeScale });
+  const sim = mode === "client" ? null : createSim({ players, frogsPerPlayer, realtime, duration, treeScale, reload: opts.reload, map: opts.map, physics: opts.physics });
 
   // One launcher per player, evenly around the tree, each facing it.
   const springPoints = [];
@@ -111,8 +162,16 @@ export function createEngine(host, opts) {
       d.visible = false;
       return d;
     });
+    // A loaded special: a glowing ring around the paddle.
+    const glowMat = new THREE.MeshBasicMaterial({ color: "#ff9a2e", transparent: true, opacity: 0.85, depthWrite: false });
+    materials.add(glowMat);
+    const glow = mesh(new THREE.TorusGeometry(0.62, 0.05, 8, 40), glowMat, group);
+    glow.rotation.x = Math.PI / 2;
+    glow.position.y = 0.55;
+    glow.castShadow = false;
+    glow.visible = false;
     // aim: x sideways and y height in the launcher's own plane.
-    return { frame, group, spring, paddle, loaded, dots, aim: { x: 0, y: 0.65 }, target: group.position.clone() };
+    return { frame, group, spring, paddle, loaded, dots, glow, aim: { x: 0, y: 0.65 }, target: group.position.clone() };
   }
   const launchers = players.map((_, li) => makeLauncher(li));
 
@@ -121,7 +180,7 @@ export function createEngine(host, opts) {
     t: 0, tree: 0, b: [], l: launchers.map(() => [0, 0.65, 0, 0]), turn: 0,
     shots: players.map(() => 0), tl: realtime ? duration : 0, cd: realtime ? 3 : 0,
     scores: players.map(() => 0), ready: players.map(() => 0), finished: 0,
-    msg: "Kapcsolódás a játékhoz…", left: players.map(() => 0),
+    msg: "Kapcsolódás a játékhoz…", left: players.map(() => 0), sp: [], ex: [],
   };
   // This device's own aim and charge.
   // own.x/own.y: this player's aim, in their launcher's plane.
@@ -159,6 +218,9 @@ export function createEngine(host, opts) {
       message: v.msg, charging, power,
       timeLeft: realtime ? v.tl : null, countdown: realtime ? v.cd : 0,
       waiting: own.waitingShot,
+      armed: own.armed,
+      // Seconds until this player's gun (key 1) and grenade (key 2) are ready, in real-time rounds.
+      specials: realtime && meIndex >= 0 && v.sp?.[meIndex] ? v.sp[meIndex] : null,
       diagnostics: diagnostics(),
     });
   }
@@ -171,7 +233,7 @@ export function createEngine(host, opts) {
     const now = performance.now();
     if (!sim && !force && now < own.nextAim) return;
     own.nextAim = now + AIM_MS;
-    send({ kind: "aim", x: round(own.x), y: round(own.y), charging: own.charging, power: round(own.power) });
+    send({ kind: "aim", x: round(own.x), y: round(own.y), charging: own.charging, power: round(own.power), armed: own.armed });
   }
   function clampOwn(x, y) {
     const half = frames[Math.max(0, controlled())].half;
@@ -181,14 +243,38 @@ export function createEngine(host, opts) {
   function release() {
     if (!own.charging) return;
     const power = Math.min(1, (performance.now() - own.chargeStart) / 1400);
-    const spin = (Math.random() - 0.5) * 0.7;
+    const spin = round((Math.random() - 0.5) * 0.7);
+    // The random tumble is picked here, so the predicted frog spins exactly like the server's.
+    const tumble = randomTumble();
     own.charging = false;
     own.power = 0;
+    if (own.armed) {
+      const kind = own.armed;
+      own.armed = null;
+      send({ kind, x: round(own.x), y: round(own.y), power: round(power) });
+      sendAim(true);
+      publish();
+      return;
+    }
     if (!sim) {
+      // Predict the shot only when the launcher is surely ready (a shot released
+      // during the reload is fired later by the server).
+      if (realtime ? v.ready[controlled()] && !own.waitingShot : isReady()) predictShot(power, spin, tumble);
       own.waitingShot = true;
       own.waitingSince = performance.now();
     }
-    send({ kind: "shoot", x: round(own.x), y: round(own.y), power: round(power), spin: round(spin) });
+    send({ kind: "shoot", x: round(own.x), y: round(own.y), power: round(power), spin, tumble });
+    publish();
+  }
+  // Keys 1 and 2 load the machine gun or the grenade into the launcher (pressing
+  // the same key again unloads it); the next charge-and-release fires it, with
+  // the charge as its strength.
+  const SPECIAL_KEYS = { gun: 0, grenade: 1 };
+  function special(kind) {
+    if (!realtime || !myTurn() || v.cd > 0) return;
+    if (own.armed !== kind && v.sp?.[meIndex]?.[SPECIAL_KEYS[kind]] > 0) return;
+    own.armed = own.armed === kind ? null : kind;
+    sendAim(true);
     publish();
   }
   function cancel() {
@@ -213,6 +299,10 @@ export function createEngine(host, opts) {
       let view = views.get(id);
       if (!view) {
         view = frog(players[b[1]]?.color ?? b[1]);
+        if (b[10]) {
+          view.scale.setScalar(GRENADE_SIZE);
+          view.userData.grenade = true;
+        } else if (b[1] === meIndex && ghosts.length) adoptGhost(view);
         scene.add(view);
         views.set(id, view);
       }
@@ -225,8 +315,203 @@ export function createEngine(host, opts) {
     for (const [id, view] of views) {
       if (!seen.has(id)) {
         views.delete(id);
-        fading.push({ view, life: FADE_TIME });
+        // A grenade is gone in its blast.
+        if (view.userData.grenade) view.removeFromParent();
+        else fading.push({ view, life: FADE_TIME });
       }
+    }
+  }
+  // Corrections are eased out: each frog carries an offset from where the
+  // simulation puts it to where it was drawn, which shrinks every frame.
+  const gap = new THREE.Vector3();
+  const identity = new THREE.Quaternion();
+  const turnGap = new THREE.Quaternion();
+  function smooth(dt) {
+    const keep = Math.exp(-SMOOTHING * dt);
+    for (const view of views.values()) {
+      const u = view.userData;
+      if (resync && u.shown) {
+        gap.copy(u.shown).sub(view.position);
+        if (gap.lengthSq() < MAX_SMOOTHED * MAX_SMOOTHED) (u.off ||= new THREE.Vector3()).copy(gap);
+        // Rotation still to make up: shown = offQ * current.
+        u.offQ = turnGap.copy(view.quaternion).invert().premultiply(u.shownQ).clone();
+      }
+      if (u.off) {
+        view.position.add(u.off);
+        u.off.multiplyScalar(keep);
+        if (u.off.lengthSq() < 1e-6) u.off = null;
+      }
+      if (u.offQ) {
+        u.offQ.slerp(identity, 1 - keep);
+        view.quaternion.premultiply(u.offQ);
+        if (1 - Math.abs(u.offQ.w) < 1e-6) u.offQ = null;
+      }
+      (u.shown ||= new THREE.Vector3()).copy(view.position);
+      (u.shownQ ||= new THREE.Quaternion()).copy(view.quaternion);
+    }
+    resync = false;
+  }
+
+  // Client-side prediction of this player's own shots: the frog leaves the
+  // launcher at once and flies the arc the server will compute, until the
+  // server's frog arrives and takes over from where the predicted one is.
+  const ghosts = [];
+  const ghostTurn = new THREE.Quaternion();
+  const ghostNext = new THREE.Vector3();
+  const ghostAxis = new THREE.Vector3();
+  function predictShot(power, spin, tumble) {
+    const li = controlled();
+    const L = launchers[li];
+    if (!L) return;
+    const view = frog(players[li]?.color ?? li);
+    view.position.copy(launchOrigin(L.frame, own.x, own.y));
+    view.rotation.y = L.frame.angle;
+    scene.add(view);
+    ghosts.push({ view, age: 0, velocity: launchVelocity(L.frame, own.x, round(power)), spin: launchSpin(L.frame, spin, tumble) });
+  }
+  function flyGhosts(dt) {
+    for (let k = ghosts.length - 1; k >= 0; k--) {
+      const g = ghosts[k];
+      g.age += dt;
+      if (g.age > GHOST_LIFE) {
+        ghosts.splice(k, 1);
+        fading.push({ view: g.view, life: FADE_TIME });
+        continue;
+      }
+      // Same motion as the simulation's: gravity, air drag, and the spin in world axes.
+      g.velocity.y -= GRAVITY * dt;
+      g.velocity.multiplyScalar(Math.exp(-0.035 * dt));
+      g.spin.multiplyScalar(Math.exp(-0.24 * dt));
+      if (g.stopped) continue;
+      // Until the server's frog takes over, a predicted one that reaches the tree waits there.
+      if (moveUntilBlocked(g.view.position, ghostNext.copy(g.view.position).addScaledVector(g.velocity, dt))) {
+        g.stopped = true;
+        continue;
+      }
+      const rate = g.spin.length();
+      if (rate > 1e-5) g.view.quaternion.premultiply(ghostTurn.setFromAxisAngle(ghostAxis.copy(g.spin).divideScalar(rate), rate * dt));
+    }
+  }
+  // A new frog of this player's from the server: the oldest predicted one hands over to it.
+  function adoptGhost(view) {
+    const g = ghosts.shift();
+    if (!g) return;
+    g.view.removeFromParent();
+    view.userData.lead = g.age;
+    view.userData.adoptP = g.view.position.clone();
+    view.userData.adoptQ = g.view.quaternion.clone();
+  }
+  // Where body `id` is at simulation time t, from the buffer (extrapolated past the newest).
+  const sampleQ = new THREE.Quaternion();
+  const sampleTo = new THREE.Vector3();
+  function sample(id, t, outP, outQ) {
+    for (let i = buffer.length - 1; i >= 0; i--) {
+      const a = buffer[i];
+      if (a.t > t && i > 0) continue;
+      const pa = a.bodies.get(id);
+      if (!pa) return false;
+      const next = buffer[i + 1];
+      const pb = next?.bodies.get(id);
+      if (pb && next.t > a.t) {
+        const k = clamp((t - a.t) / (next.t - a.t), 0, 1);
+        outP.set(pa[2] + (pb[2] - pa[2]) * k, pa[3] + (pb[3] - pa[3]) * k, pa[4] + (pb[4] - pa[4]) * k);
+        outQ.set(pa[5], pa[6], pa[7], pa[8]).normalize().slerp(sampleQ.set(pb[5], pb[6], pb[7], pb[8]).normalize(), k);
+        return true;
+      }
+      outP.set(pa[2], pa[3], pa[4]);
+      outQ.set(pa[5], pa[6], pa[7], pa[8]).normalize();
+      const before = buffer[i - 1];
+      const pc = before?.bodies.get(id);
+      const ahead = Math.min(Math.max(0, t - a.t), MAX_EXTRAPOLATE);
+      if (pc && ahead > 0 && a.t > before.t) {
+        const span = a.t - before.t;
+        const vx = (pa[2] - pc[2]) / span, vy = (pa[3] - pc[3]) / span, vz = (pa[4] - pc[4]) / span;
+        const flying = vx * vx + vy * vy + vz * vz > FLYING_SPEED * FLYING_SPEED;
+        sampleTo.set(outP.x + vx * ahead, outP.y + vy * ahead - (flying ? 0.5 * GRAVITY * ahead * ahead : 0), outP.z + vz * ahead);
+        if (!moveUntilBlocked(outP, sampleTo)) keepTurning(outQ, pc, pa, ahead / span);
+      }
+      return true;
+    }
+    return false;
+  }
+  // Extrapolated rotation: q (body `to`'s) turned on by `times` times the turn
+  // from snapshot body `from` to `to`, so a frog keeps spinning through a stall.
+  const turnFrom = new THREE.Quaternion();
+  const turnStep = new THREE.Quaternion();
+  const turnAxis = new THREE.Vector3();
+  function keepTurning(q, from, to, times) {
+    turnFrom.set(from[5], from[6], from[7], from[8]).normalize().invert();
+    turnStep.set(to[5], to[6], to[7], to[8]).normalize().multiply(turnFrom);
+    if (turnStep.w < 0) turnStep.set(-turnStep.x, -turnStep.y, -turnStep.z, -turnStep.w);
+    const angle = 2 * Math.acos(clamp(turnStep.w, -1, 1));
+    const s = Math.sqrt(Math.max(0, 1 - turnStep.w * turnStep.w));
+    if (angle < 1e-5 || s < 1e-6) return;
+    turnAxis.set(turnStep.x / s, turnStep.y / s, turnStep.z / s);
+    q.premultiply(turnStep.setFromAxisAngle(turnAxis, angle * times));
+  }
+
+  // Own frogs taken over from a prediction: drawn `lead` seconds ahead.
+  const leadP = new THREE.Vector3();
+  const leadQ = new THREE.Quaternion();
+  function leadOwnFrogs(rt, dt) {
+    for (const [id, view] of views) {
+      const u = view.userData;
+      if (!u.lead) continue;
+      if (sample(id, rt + u.lead, leadP, leadQ)) {
+        view.position.copy(leadP);
+        view.quaternion.copy(leadQ);
+      }
+      // The first frame: whatever is left between the prediction and this is eased out.
+      if (u.adoptP) {
+        const off = u.adoptP.sub(view.position);
+        u.off = off.lengthSq() < MAX_SMOOTHED * MAX_SMOOTHED ? off : null;
+        u.offQ = u.adoptQ.multiply(leadQ.copy(view.quaternion).invert());
+        u.adoptP = u.adoptQ = null;
+      }
+      u.lead = Math.max(0, u.lead - LEAD_DECAY * dt);
+    }
+  }
+
+  // Grenade blasts: a fireball and a shock ring that grow and fade.
+  const blastGeometry = new THREE.SphereGeometry(1, 24, 16);
+  const ringGeometry = new THREE.TorusGeometry(1, 0.08, 8, 40);
+  geometries.add(blastGeometry);
+  geometries.add(ringGeometry);
+  const blasts = [];
+  const seenBlasts = new Set();
+  function showBlasts(list) {
+    for (const [id, x, y, z] of list || []) {
+      if (seenBlasts.has(id)) continue;
+      seenBlasts.add(id);
+      const fire = new THREE.Mesh(blastGeometry, new THREE.MeshBasicMaterial({ color: "#ffb02e", transparent: true, depthWrite: false }));
+      const ring = new THREE.Mesh(ringGeometry, new THREE.MeshBasicMaterial({ color: "#fff3c4", transparent: true, depthWrite: false }));
+      ring.rotation.x = Math.PI / 2;
+      for (const m of [fire, ring]) {
+        m.position.set(x, y, z);
+        scene.add(m);
+      }
+      blasts.push({ fire, ring, age: 0 });
+      shake = Math.max(shake, 0.45);
+    }
+  }
+  function animateBlasts(dt) {
+    for (let k = blasts.length - 1; k >= 0; k--) {
+      const b = blasts[k];
+      b.age += dt;
+      const t = b.age / BLAST_TIME;
+      if (t >= 1) {
+        for (const m of [b.fire, b.ring]) {
+          m.removeFromParent();
+          m.material.dispose();
+        }
+        blasts.splice(k, 1);
+        continue;
+      }
+      b.fire.scale.setScalar(0.6 + 4.6 * Math.sqrt(t));
+      b.fire.material.opacity = 0.9 * (1 - t);
+      b.fire.material.color.setHSL(0.1 - 0.08 * t, 1, 0.6 - 0.25 * t);
+      b.ring.scale.setScalar(0.5 + 7 * t);
+      b.ring.material.opacity = 0.8 * (1 - t);
     }
   }
   // Frogs that left the game shrink away instead of vanishing.
@@ -247,6 +532,12 @@ export function createEngine(host, opts) {
   const buffer = [];
   let clockOffset = null; // local seconds minus simulation seconds, for the least delayed snapshot
   let delay = 0.12;
+  let paused = false;
+  // Playback time (simulation seconds) of what is on screen.
+  let playT = null;
+  // Set when drawing resumes from real snapshots after extrapolating through a stall.
+  let resync = false;
+  let extrapolating = false;
   // Diagnostics (D key): arrival gaps, lateness, and how often the buffer ran dry.
   const diag = { gaps: [], late: [], underruns: 0, lastArrival: 0, frames: [], server: null };
   function applySnapshot(s) {
@@ -259,17 +550,39 @@ export function createEngine(host, opts) {
       buffer.length = 0;
       clockOffset = null;
     }
+    // The simulation clock stands still between rounds. Show the latest state,
+    // but do not take the wait for network delay: that made every snapshot of
+    // the next round look as late as the pause was long, and play stuttered.
+    if (last && t === last.t) {
+      paused = true;
+      last.s = s;
+      last.bodies = new Map(s.b.map(a => [a[0], a]));
+      diag.lastArrival = local;
+      accept(s);
+      return;
+    }
+    if (paused) {
+      paused = false;
+      clockOffset = null;
+      playT = null;
+      diag.late.length = 0;
+      diag.lastArrival = 0;
+    }
     const offset = local - t;
-    // Track the fastest delivery, drifting slowly so a lasting slowdown is followed.
-    clockOffset = clockOffset === null ? offset : Math.min(offset, clockOffset + 0.002);
-    // How late this one is compared with the fastest: the delay must cover that.
+    // Track the fastest delivery, drifting slowly (40 ms a second, whatever the
+    // snapshot rate) so a lasting slowdown is followed.
+    const since = diag.lastArrival ? Math.min(local - diag.lastArrival, 0.5) : 0;
+    clockOffset = clockOffset === null ? offset : Math.min(offset, clockOffset + since * 0.04);
+    // How late this one is compared with the fastest: the delay covers nearly all
+    // of that, stalls included (the playback clock eases to a new delay).
     const lateness = offset - clockOffset;
     diag.late.push(lateness);
-    if (diag.late.length > 60) diag.late.shift();
-    const worst = Math.max(...diag.late);
+    if (diag.late.length > LATE_WINDOW) diag.late.shift();
+    const sorted = [...diag.late].sort((x, y) => x - y);
+    const worst = sorted[Math.floor((sorted.length - 1) * 0.99)];
     const wanted = clamp(worst + 0.04, MIN_DELAY, MAX_DELAY);
     // Grow at once, shrink slowly.
-    delay = wanted > delay ? wanted : delay + (wanted - delay) * 0.02;
+    delay = wanted > delay ? wanted : delay + (wanted - delay) * 0.005;
     if (diag.lastArrival) {
       diag.gaps.push(local - diag.lastArrival);
       if (diag.gaps.length > 60) diag.gaps.shift();
@@ -278,6 +591,10 @@ export function createEngine(host, opts) {
     if (s.sv) diag.server = s.sv;
     buffer.push({ t, s, bodies: new Map(s.b.map(a => [a[0], a])) });
     if (buffer.length > 60) buffer.shift();
+    accept(s);
+  }
+  function accept(s) {
+    showBlasts(s.ex);
     v = s;
     const mine = s.shots[meIndex] ?? 0;
     if (mine !== own.lastMine) {
@@ -286,21 +603,62 @@ export function createEngine(host, opts) {
     }
     if (!myTurn()) own.charging = false;
   }
+  // C: the colliders drawn as red wireframes over the field, to check they match what is shown.
+  let colliderViews = null;
+  function toggleColliders() {
+    if (!colliderViews) {
+      const wire = new THREE.MeshBasicMaterial({ color: "#ff2a2a", wireframe: true, transparent: true, opacity: 0.6, depthTest: false });
+      materials.add(wire);
+      colliderViews = world.colliders.map(c => {
+        const view = new THREE.Mesh(c.object.geometry, wire);
+        view.position.copy(c.object.position);
+        view.quaternion.copy(c.object.quaternion);
+        view.renderOrder = 10;
+        c.object.parent.add(view);
+        return view;
+      });
+      return;
+    }
+    const show = !colliderViews[0]?.visible;
+    for (const view of colliderViews) view.visible = show;
+  }
   const rideQ = new THREE.Quaternion();
   const UP = new THREE.Vector3(0, 1, 0);
-  function interpolate(now) {
+  const guess = new THREE.Vector3();
+  function interpolate(now, dt) {
     if (!buffer.length) return;
-    const rt = now / 1000 - clockOffset - delay;
+    const target = now / 1000 - clockOffset - delay;
+    if (playT === null || Math.abs(target - playT) > 1) playT = target;
+    else playT += dt * (1 + clamp((target - playT) * CLOCK_EASE, -MAX_SLOWER, MAX_FASTER));
+    const rt = playT;
     while (buffer.length > 2 && buffer[1].t <= rt) buffer.shift();
     const newest = buffer[buffer.length - 1];
     if (rt > newest.t) {
       // Ran out of snapshots: keep the tree turning (its motion is known) and the
       // frogs sitting on it turning with it, instead of freezing.
       if (!newest.s.finished) diag.underruns++;
+      extrapolating = !newest.s.finished;
       const ahead = newest.s.finished ? 0 : Math.min(rt - newest.t, 0.5);
       const turn = TREE_OMEGA.y * ahead;
       tree.rotation.y = newest.s.tree + turn;
       drawBodies(newest.s.b, null, 1);
+      // Frogs in flight carry on along their arc, at the speed of the last two
+      // snapshots, so a network stall does not freeze them mid-air.
+      const before = buffer[buffer.length - 2];
+      const span = before ? newest.t - before.t : 0;
+      if (ahead && span > 0) {
+        tree.updateMatrixWorld(true);
+        const fly = Math.min(ahead, MAX_EXTRAPOLATE);
+        for (const b of newest.s.b) {
+          const p = before.bodies.get(b[0]);
+          const view = views.get(b[0]);
+          if (b[9] || !p || !view) continue;
+          const vx = (b[2] - p[2]) / span, vy = (b[3] - p[3]) / span, vz = (b[4] - p[4]) / span;
+          const flying = vx * vx + vy * vy + vz * vz > FLYING_SPEED * FLYING_SPEED;
+          guess.set(view.position.x + vx * fly, view.position.y + vy * fly - (flying ? 0.5 * GRAVITY * fly * fly : 0), view.position.z + vz * fly);
+          if (!moveUntilBlocked(view.position, guess)) keepTurning(view.quaternion, p, b, fly / span);
+        }
+      }
       if (turn) {
         rideQ.setFromAxisAngle(UP, turn);
         for (const b of newest.s.b) {
@@ -311,7 +669,12 @@ export function createEngine(host, opts) {
           view.quaternion.premultiply(rideQ);
         }
       }
+      leadOwnFrogs(rt, dt);
       return;
+    }
+    if (extrapolating) {
+      extrapolating = false;
+      resync = true;
     }
     const a = buffer[0];
     const b = buffer[1] || a;
@@ -319,6 +682,7 @@ export function createEngine(host, opts) {
     // The tree turns at a constant rate: place it by time, not by blending angles.
     tree.rotation.y = a.s.finished ? b.s.tree : a.s.tree + (b.s.tree - a.s.tree) * k;
     drawBodies(b.s.b, a.bodies, k);
+    leadOwnFrogs(rt, dt);
   }
   function diagnostics() {
     const avg = list => (list.length ? list.reduce((x, y) => x + y, 0) / list.length : 0);
@@ -374,7 +738,10 @@ export function createEngine(host, opts) {
     }
   }
   function down(e) {
-    if (e.button !== 0 || !isReady()) return;
+    // In real-time rounds charging may start during the reload: the simulation
+    // fires a shot released early as soon as the launcher is ready.
+    const canCharge = realtime ? myTurn() && !(v.cd > 0) : isReady();
+    if (e.button !== 0 || !canCharge) return;
     e.preventDefault();
     aim(e);
     const L = launchers[controlled()];
@@ -393,6 +760,9 @@ export function createEngine(host, opts) {
   function key(e) {
     if (e.key.toLowerCase() === "r" && !e.repeat && sim) reset();
     if (e.key === "Escape") cancel();
+    if (e.key.toLowerCase() === "c" && !e.repeat) toggleColliders();
+    if (e.key === "1" && !e.repeat) special("gun");
+    if (e.key === "2" && !e.repeat) special("grenade");
   }
   renderer.domElement.addEventListener("pointermove", aim);
   renderer.domElement.addEventListener("pointerdown", down);
@@ -405,6 +775,8 @@ export function createEngine(host, opts) {
   // current player's) and swings around the tree when that changes.
   const { radius } = layout(treeScale);
   let cameraAngle = null;
+  // A blast shakes the camera, fading out.
+  let shake = 0;
   function placeCamera(dt) {
     const who = Math.max(0, controlled() >= 0 ? controlled() : meIndex);
     const target = frames[who]?.angle ?? 0;
@@ -417,6 +789,11 @@ export function createEngine(host, opts) {
     const view = { angle: cameraAngle, sin: Math.sin(cameraAngle), cos: Math.cos(cameraAngle) };
     frameToWorld(view, 0, height, back, camera.position);
     camera.lookAt(frameToWorld(view, 0, 2 + (treeScale - 1) * 2.5, radius - 6.75));
+    if (shake > 0) {
+      camera.position.x += (Math.random() - 0.5) * shake;
+      camera.position.y += (Math.random() - 0.5) * shake;
+      shake = Math.max(0, shake - dt * 1.1);
+    }
   }
   const observer = new ResizeObserver(() => {
     const w = host.clientWidth;
@@ -441,14 +818,20 @@ export function createEngine(host, opts) {
       v = sim.state(true);
       tree.rotation.y = v.tree;
       drawBodies(v.b, null, 1);
+      showBlasts(v.ex);
     } else {
-      interpolate(now);
+      interpolate(now, dt);
       // A shot the host rejected must not lock the player out forever.
       if (own.waitingShot && now - own.waitingSince > 3000) own.waitingShot = false;
     }
 
     // When this device starts driving a launcher, pick up its aim where it stands.
     fade(dt);
+    animateBlasts(dt);
+    if (!sim) {
+      smooth(dt);
+      flyGhosts(dt);
+    }
     const mine = myTurn();
     const ctl = controlled();
     if (mine && (!own.wasMyTurn || ctl !== own.lastControlled) && v.l[ctl]) clampOwn(v.l[ctl][0], v.l[ctl][1]);
@@ -475,12 +858,22 @@ export function createEngine(host, opts) {
       L.spring.scale.y = 1 - compression * 1.5;
       L.paddle.position.y = 0.49 - compression;
       const ready = driven ? isReady() : !!v.ready[owner];
-      const showLoaded = !v.finished && active(owner) && ready;
+      // A loaded special (this player's own, or as reported for the others).
+      const armed = driven ? own.armed : ARMED_NAMES[v.l[li]?.[4]] ?? null;
+      const showLoaded = !v.finished && active(owner) && (ready || !!armed);
       const colour = players[owner]?.color ?? 0;
+      const big = armed === "grenade" ? GRENADE_SIZE * 0.8 : 1;
       L.loaded.forEach((f, i) => {
         f.visible = showLoaded && i === colour;
-        f.position.y = 0.78 - compression;
+        f.scale.setScalar(big);
+        f.position.y = 0.78 - compression + (big - 1) * 0.2;
       });
+      L.glow.visible = !!armed && !v.finished;
+      if (armed) {
+        L.glow.material.color.set(armed === "grenade" ? "#ff3b2e" : "#ff9a2e");
+        L.glow.scale.setScalar(1 + 0.12 * Math.sin(now / 120));
+        L.glow.position.y = 0.55 - compression;
+      }
       const origin = launchOrigin(L.frame, side, L.group.position.y);
       const velocity = launchVelocity(L.frame, side, power);
       L.dots.forEach((d, i) => {
@@ -508,6 +901,7 @@ export function createEngine(host, opts) {
 
   function dispose() {
     own.disposed = true;
+    sim?.dispose();
     cancelAnimationFrame(frame);
     observer.disconnect();
     window.removeEventListener("keydown", key);
@@ -523,5 +917,5 @@ export function createEngine(host, opts) {
     renderer.domElement.remove();
   }
 
-  return { reset, remoteInput, applySnapshot, setPresent, dispose };
+  return { reset, remoteInput, applySnapshot, setPresent, special, dispose };
 }

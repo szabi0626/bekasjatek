@@ -114,3 +114,31 @@ html,body{margin:0;background:#f8f7f0}
 @media(max-width:540px){.ff-game{height:80vh;min-height:630px;border-radius:19px}.ff-header{margin-bottom:13px}.ff-name{font-size:19px}.ff-btn{font-size:11px;padding:9px}.ff-title h1{font-size:24px}.ff-title p{max-width:150px;font-size:10px}.ff-stat{min-width:63px;padding:9px}.ff-stat span{font-size:8px;letter-spacing:.5px}.ff-stat b{font-size:23px}.ff-stats{gap:5px}.ff-help{width:145px;top:173px}.ff-help p{font-size:10px}.ff-bottom{left:14px;right:14px;bottom:14px;flex-direction:column;align-items:stretch;gap:8px}.ff-status{max-width:none;padding:10px 12px;min-height:35px}.ff-power{width:100%;padding:12px 14px}.ff-power-note{display:none}.ff-footer{font-size:9px;line-height:1.6}.ff-footer span:last-child{text-align:right;max-width:135px}}
 @media(max-width:750px){.ff-players{max-width:58%}.ff-player{min-width:96px;padding:9px 11px}.ff-player b{font-size:20px}.ff-player small{display:block;margin:2px 0 0}}
 @media(max-width:540px){.ff-overlay{flex-direction:column}.ff-title h1,.ff-title p{display:none}.ff-name small{display:none}.ff-buttons{gap:5px}.ff-btn{white-space:nowrap;padding:8px 9px}.ff-players{max-width:none;justify-content:flex-start}.ff-help{display:none}.ff-panel{padding:22px}.ff-code{font-size:46px}}
+.ff-specials{display:flex;gap:12px;pointer-events:auto;margin-left:auto;align-self:flex-end}
+.ff-special{position:relative;overflow:hidden;width:112px;height:112px;flex:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:8px;border-radius:18px;border:2px solid #c9d4b6;background:#fbfdf1e0;color:#5f6b52;font:inherit;text-align:center;cursor:default}
+.ff-special>*{position:relative}
+.ff-special-fill{position:absolute;left:0;right:0;bottom:0;background:linear-gradient(0deg,#cfe3a9,#e8f2c9);transition:height .1s linear}
+.ff-special kbd{position:absolute;top:7px;left:7px;display:grid;place-items:center;width:28px;height:28px;border-radius:8px;background:#fff;border:2px solid #9fae88;border-bottom-width:4px;font:800 17px/1 inherit;color:#3c5a35}
+.ff-special-icon{display:grid;place-items:center;height:38px;margin-top:8px}
+.ff-special-text{display:flex;flex-direction:column}
+.ff-special-text b{font-size:13px;color:#3c5a35}
+.ff-special-text small{display:none}
+.ff-special-time{font-size:15px;font-weight:800;color:#748166;font-variant-numeric:tabular-nums}
+.ff-special.is-ready{border-color:#e2b52a;background:#fff6cf;cursor:pointer;box-shadow:0 0 0 3px #f3cc4366,0 8px 22px #26352126;animation:ff-special-pulse 1.4s ease-in-out infinite}
+.ff-special.is-ready .ff-special-fill{background:linear-gradient(0deg,#f6d55c,#fff1b0)}
+.ff-special.is-ready kbd{border-color:#c9971c;color:#7a5a00}
+.ff-special.is-ready .ff-special-time{color:#a87b00}
+@keyframes ff-special-pulse{50%{box-shadow:0 0 0 6px #f3cc4333,0 8px 22px #26352126}}
+@media(max-width:540px){.ff-specials{margin-left:0;justify-content:center}.ff-special{width:92px;height:92px}.ff-special-icon svg{transform:scale(.85)}.ff-special kbd{width:24px;height:24px;font-size:14px}}
+.ff-chat{display:flex;flex-direction:column;gap:8px;background:#fff;border:1px solid #e3e8d8;border-radius:14px;padding:10px}
+.ff-chat-list{height:150px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;font-size:13px;line-height:1.35;padding:2px 4px}
+.ff-chat-list p{margin:0;overflow-wrap:anywhere;color:#3d4a35}
+.ff-chat-list p.is-mine{background:#f4f8e8;border-radius:8px;padding:2px 6px;margin:0 -6px}
+.ff-chat-list p.is-notice,.ff-chat-empty{color:#93a07f;font-size:11px;font-style:italic}
+.ff-chat-form{display:flex;gap:6px}
+.ff-chat-form input{flex:1;min-width:0;font:inherit;font-size:13px;padding:9px 11px;border:1px solid #d6dec6;border-radius:10px;background:#fbfdf6;color:#2f3d2a}
+.ff-chat-form input:focus{outline:2px solid #b8d07f;border-color:transparent}
+.ff-maps{flex-wrap:wrap}.ff-maps button{flex:1 1 40%}
+.ff-credit{width:100%;font-size:9px;opacity:.8}.ff-credit a{color:inherit}
+.ff-special.is-armed{border-color:#e0521f;background:#ffe2c9;box-shadow:0 0 0 4px #ff7a3a88,0 8px 22px #26352126;animation:ff-special-pulse .6s ease-in-out infinite}
+.ff-special.is-armed .ff-special-time{color:#c2410c;font-size:12px}

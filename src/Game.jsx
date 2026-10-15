@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createEngine, FROG_COLORS } from "./game/engine.js";
+import { GUN_COOLDOWN, GRENADE_COOLDOWN } from "./game/sim.js";
 
 const MODE_LABEL = {
   local: "HELYI JÁTÉK",
@@ -7,12 +8,66 @@ const MODE_LABEL = {
   client: "ONLINE",
 };
 
+// Icons for the special tiles (drawn inline, so they look the same everywhere).
+const GunIcon = () => (
+  <svg viewBox="0 0 48 32" width="46" height="31" aria-hidden="true">
+    <rect x="3" y="11" width="30" height="9" rx="2" fill="#4a5a3f"/>
+    <rect x="31" y="13" width="15" height="4" rx="1.5" fill="#33402c"/>
+    <rect x="31" y="9" width="3" height="13" rx="1" fill="#33402c"/>
+    <path d="M7 20h8l-3 9H5z" fill="#6b4f2e"/>
+    <path d="M17 20h7v7a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2z" fill="#33402c"/>
+    <rect x="1" y="12" width="5" height="7" rx="1.5" fill="#6b4f2e"/>
+    <circle cx="40" cy="15" r="1.2" fill="#f3cc43"/>
+    <path d="M20 6h7M22 3h5" stroke="#f3cc43" stroke-width="2" stroke-linecap="round"/>
+  </svg>
+);
+const GrenadeIcon = () => (
+  <svg viewBox="0 0 40 40" width="38" height="38" aria-hidden="true">
+    <circle cx="18" cy="24" r="13" fill="#5c7a3a"/>
+    <path d="M9 18h18M7 24h22M9 30h18M14 12v24M22 12v24" stroke="#46612b" stroke-width="2"/>
+    <rect x="13" y="7" width="10" height="6" rx="1.5" fill="#4a5a3f"/>
+    <path d="M23 9c5 0 8 2 9 7" stroke="#4a5a3f" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+    <circle cx="30" cy="5" r="3" fill="none" stroke="#9aa58a" stroke-width="2"/>
+    <path d="M33 2l3-2M35 5h3M34 8l2 2" stroke="#f39a2b" stroke-width="2" stroke-linecap="round"/>
+  </svg>
+);
+
+// Credits for the models a map uses (the Shrek model's CC BY licence asks for it).
+const MODEL_CREDITS = {
+  shrek: <>„Shrek” 3D-modell: <a href="https://sketchfab.com/3d-models/shrek-ee9fbba7e7a841dbb817cc6cec678355" target="_blank" rel="noreferrer">HarrisonHag1</a>, <a href="http://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a></>,
+  castle: <>Kastély: <a href="https://www.kenney.nl/assets/castle-kit" target="_blank" rel="noreferrer">Kenney Castle Kit</a> (CC0)</>,
+};
+
+// Real-time specials: keys 1 and 2 (or a click on their tile).
+const SPECIALS = [
+  { kind: "gun", hotkey: "1", icon: <GunIcon/>, label: "Gépágyú", detail: "15 béka sorozatban", total: GUN_COOLDOWN },
+  { kind: "grenade", hotkey: "2", icon: <GrenadeIcon/>, label: "Gránát", detail: "Óriásbéka, robban", total: GRENADE_COOLDOWN },
+];
+
+function Special({ hotkey, icon, label, detail, total, left, locked, armed, onFire }) {
+  const ready = (armed || !(left > 0)) && !locked;
+  const charge = left > 0 ? 1 - Math.min(1, left / total) : 1;
+  return (
+    <button type="button" className={`ff-special${ready ? " is-ready" : ""}${armed ? " is-armed" : ""}`} onClick={onFire} disabled={!ready}
+      aria-label={`${label} (${hotkey}-es gomb): ${ready ? "kész" : `${Math.ceil(left)} másodperc`}`}>
+      <div className="ff-special-fill" style={{ height: `${charge * 100}%` }}/>
+      <kbd>{hotkey}</kbd>
+      <span className="ff-special-icon">{icon}</span>
+      <span className="ff-special-text">
+        <b>{label}</b>
+        <small>{detail}</small>
+      </span>
+      <span className="ff-special-time">{armed ? "BETÖLTVE" : left > 0 ? `${Math.ceil(left)} s` : locked ? "—" : "KÉSZ"}</span>
+    </button>
+  );
+}
+
 export default function Game({ config, net, onExit }) {
   const mount = useRef(null);
   const engine = useRef(null);
   const [hud, setHud] = useState(null);
   const [help, setHelp] = useState(true);
-  const [showDiag, setShowDiag] = useState(false);
+  const [showDiag, setShowDiag] = useState(!!config.diag);
 
   // D toggles the connection/performance readout.
   useEffect(() => {
@@ -22,6 +77,30 @@ export default function Game({ config, net, onExit }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+  // Round trip to the game server, measured once a second while the readout is shown.
+  const [ping, setPing] = useState(null);
+  useEffect(() => {
+    if (!showDiag || !net?.authoritative) return;
+    const recent = [];
+    const off = net.on("pong", m => {
+      const rtt = performance.now() - m.c;
+      if (!(rtt >= 0 && rtt < 60000)) return;
+      recent.push(rtt);
+      if (recent.length > 20) recent.shift();
+      setPing({
+        last: Math.round(rtt),
+        avg: Math.round(recent.reduce((a, b) => a + b, 0) / recent.length),
+        max: Math.round(Math.max(...recent)),
+      });
+    });
+    const send = () => net.send({ t: "ping", c: performance.now() });
+    send();
+    const timer = setInterval(send, 1000);
+    return () => {
+      off();
+      clearInterval(timer);
+    };
+  }, [showDiag, net]);
   const [notice, setNotice] = useState(null);
   // On the game server the room's owner (whoever created it, or the next player
   // after they leave) may start a new round.
@@ -53,7 +132,8 @@ export default function Game({ config, net, onExit }) {
     };
   }, [config, net]);
 
-  const solo = config.players.length === 1;
+  // A one-player diagnostic game on the server keeps the online (timed) layout.
+  const solo = config.players.length === 1 && !config.diag;
   const serverGame = !!net?.authoritative;
   const canReset = config.mode !== "client" || (serverGame && ownerId === config.localPlayerId);
   const restart = () => (serverGame ? net.send({ t: "reset" }) : engine.current?.reset());
@@ -69,6 +149,7 @@ export default function Game({ config, net, onExit }) {
   let powerLabel = "KILÖVÉS EREJE";
   if (realtime) {
     if (hud.countdown > 0) powerLabel = "KÉSZÜLJ…";
+    else if (hud.armed) powerLabel = hud.armed === "grenade" ? "GRÁNÁT · TÖLTSD, ENGEDD EL" : "GÉPÁGYÚ · TÖLTSD, ENGEDD EL";
     else if (hud.charging) powerLabel = "KATAPULT TÖLTÉSE";
     else if (!hud.myTurn) powerLabel = "LEJÁRT AZ IDŐ";
     else if (!hud.ready) powerLabel = "ÚJRATÖLTÉS";
@@ -146,10 +227,18 @@ export default function Game({ config, net, onExit }) {
           <div className="ff-countdown" aria-live="assertive">{hud.countdown}</div>
         )}
 
-        {showDiag && hud?.diagnostics && <Diagnostics d={hud.diagnostics}/>}
+        {showDiag && hud?.diagnostics && <Diagnostics d={hud.diagnostics} ping={ping}/>}
 
         <div className="ff-bottom">
           <div className="ff-status" role="status">{hud?.message ?? ""}</div>
+          {hud?.specials && (
+            <div className="ff-specials">
+              {SPECIALS.map((s, k) => (
+                <Special key={s.kind} {...s} left={hud.specials[k]} locked={hud.countdown > 0 || !hud.myTurn} armed={hud.armed === s.kind}
+                  onFire={() => engine.current?.special(s.kind)}/>
+              ))}
+            </div>
+          )}
           <div className="ff-power">
             <div className="ff-power-label">
               <span>{powerLabel}</span>
@@ -205,14 +294,15 @@ export default function Game({ config, net, onExit }) {
       </main>
 
       <footer className="ff-footer">
-        <span><strong>{solo ? `${total} béka. 4 levél.` : config.realtime ? `${players.length} játékos · ${config.duration ?? 60} mp, korlátlan béka` : `${players.length} játékos · ${total} béka fejenként`}</strong> Pattogás · súrlódás · forgás</span>
-        <span>{canReset && !serverGame ? "R: új kör · " : ""}Esc: töltés megszakítása · D: diagnosztika</span>
+        <span><strong>{solo ? `${total} béka.` : config.realtime ? `${players.length} játékos · ${config.duration ?? 60} mp, korlátlan béka` : `${players.length} játékos · ${total} béka fejenként`}</strong> Pattogás · súrlódás · forgás</span>
+        <span>{canReset && !serverGame ? "R: új kör · " : ""}Esc: töltés megszakítása · D: diagnosztika · C: ütközők · F9 (menüben): diagnosztikai játék</span>
+        {MODEL_CREDITS[config.map] && <span className="ff-credit">{MODEL_CREDITS[config.map]}</span>}
       </footer>
     </>
   );
 }
 
-function Diagnostics({ d }) {
+function Diagnostics({ d, ping }) {
   const sv = d.server;
   const rows = [
     ["Képkocka/mp", d.fps],
@@ -220,6 +310,13 @@ function Diagnostics({ d }) {
     ["Békák a pályán", d.frogs],
   ];
   if (d.mode === "client") {
+    rows.push(
+      ["Ping", ping ? `${ping.last} ms` : "mérés…"],
+      ["Ping átlag / max", ping ? `${ping.avg} / ${ping.max} ms` : "–"],
+      // Your shot reaches the server (half a round trip), comes back in a snapshot
+      // (the other half), then waits in the buffer before it is drawn.
+      ["Becsült késés (lövés → látod)", ping ? `~${ping.avg + d.delayMs} ms` : "–"],
+    );
     rows.push(
       ["Frissítés/mp", d.snapshotsPerSecond ?? "–"],
       ["Leghosszabb szünet", d.worstGapMs != null ? `${d.worstGapMs} ms` : "–"],
